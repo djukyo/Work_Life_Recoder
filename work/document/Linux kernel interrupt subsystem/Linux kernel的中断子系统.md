@@ -143,9 +143,13 @@ http://www.wowotech.net/irq_subsystem/tasklet.html
 
 在linux kernel中，我们使用下面两个ID来标识一个来自外设的中断：
 
-1、IRQ number。CPU需要为每一个外设中断编号，我们称之IRQ Number。这个IRQ number是一个虚拟的interrupt ID，和硬件无关，仅仅是被CPU用来标识一个外设中断。
+#### 1、IRQ number。
 
-2、HW interrupt ID。对于interrupt controller而言，它收集了多个外设的interrupt request line并向上传递，因此，interrupt controller需要对外设中断进行编码。Interrupt controller用HW interrupt ID来标识外设的中断。在interrupt controller级联的情况下，仅仅用HW interrupt ID已经不能唯一标识一个外设中断，还需要知道该HW interrupt ID所属的interrupt controller(HW interrupt ID在不同的Interrupt controller上是会重复编码的)。
+CPU需要为每一个外设中断编号，我们称之IRQ Number。这个IRQ number是一个虚拟的interrupt ID，和硬件无关，仅仅是被CPU用来标识一个外设中断。
+
+#### 2、HW interrupt ID。
+
+对于interrupt controller而言，它收集了多个外设的interrupt request line并向上传递，因此，interrupt controller需要对外设中断进行编码。Interrupt controller用HW interrupt ID来标识外设的中断。在interrupt controller级联的情况下，仅仅用HW interrupt ID已经不能唯一标识一个外设中断，还需要知道该HW interrupt ID所属的interrupt controller(HW interrupt ID在不同的Interrupt controller上是会重复编码的)。
 
 这样，CPU和interrupt controller在标识中断上就有了一些不同的概念，但是，对于驱动工程师而言，我们和CPU视角是一样的，我们只希望得到一个IRQ number，而不关心具体是那个interrupt controller上的那个HW interrupt ID。这样一个好处是在中断相关的硬件发生变化的时候，驱动软件不需要修改。因此，linux kernel中的中断子系统需要提供一个将HW interrupt ID映射到IRQ number上来的机制，这就是本文主要的内容。
 
@@ -153,7 +157,9 @@ http://www.wowotech.net/irq_subsystem/tasklet.html
 
 关于HW interrupt ID映射到IRQ number上这事，在过去系统只有一个interrupt controller的时候还是很简单的，中断控制器上实际的HW interrupt line的编号可以直接变成IRQ number。例如我们大家都熟悉的SOC内嵌的interrupt controller，这种controller多半有中断状态寄存器，这个寄存器可能有64个bit(也可能更多)，每个bit就是一个IRQ number，可以直接进行映射。这时候，GPIO的中断在中断控制器的状态寄存器中只有一个bit，因此所有的GPIO中断只有一个IRQ number，在该通用GPIO中断的irq handler中进行deduplex，将各个具体的GPIO中断映射到其相应的IRQ number上。如果你是一个足够老的工程师，应该是经历过这个阶段的。
 
-随着linux kernel的发展，将interrupt controller抽象成irqchip这个概念越来越流行，甚至GPIO controller也可以被看出一个interrupt controller chip，这样，系统中至少有两个中断控制器了，一个传统意义的中断控制器，一个是GPIO controller type的中断控制器。随着系统复杂度加大，外设中断数据增加，实际上系统可以需要多个中断控制器进行级联，面对这样的趋势，linux kernel工程师如何应对?答案就是irq domain这个概念。
+随着linux kernel的发展，将interrupt controller抽象成irqchip这个概念越来越流行，甚至GPIO controller也可以被看出一个interrupt controller chip，这样，系统中至少有两个中断控制器了，一个传统意义的中断控制器，一个是GPIO controller type的中断控制器。随着系统复杂度加大，外设中断数据增加，实际上系统可以需要多个中断控制器进行级联，面对这样的趋势，linux kernel工程师如何应对?
+
+答案就是irq domain这个概念。
 
 我们听说过很多的domain，power domain，clock domain等等，所谓domain，就是领域，范围的意思，也就是说，任何的定义出了这个范围就没有意义了。系统中所有的interrupt controller会形成树状结构，对于每个interrupt controller都可以连接若干个外设的中断请求(我们称之interrupt source)，interrupt controller会对连接其上的interrupt source(根据其在Interrupt controller中物理特性)进行编号(也就是HW interrupt ID了)。但这个编号仅仅限制在本interrupt controller范围内。
 
@@ -163,7 +169,9 @@ http://www.wowotech.net/irq_subsystem/tasklet.html
 
 具体如何进行映射是interrupt controller自己的事情，不过，有软件架构思想的工程师更愿意对形形色色的interrupt controller进行抽象，对如何进行HW interrupt ID到IRQ number映射关系上进行进一步的抽象。因此，通用中断处理模块中有一个irq domain的子模块，该模块将这种映射关系分成了三类：
 
-(1) 线性映射。其实就是一个lookup table，HW interrupt ID作为index，通过查表可以获取对应的IRQ number。对于Linear map而言，interrupt controller对其HW interrupt ID进行编码的时候要满足一定的条件：hw ID不能过大，而且ID排列最好是紧密的。对于线性映射，其接口API如下：
+##### (1) 线性映射。
+
+其实就是一个lookup table，HW interrupt ID作为index，通过查表可以获取对应的IRQ number。对于Linear map而言，interrupt controller对其HW interrupt ID进行编码的时候要满足一定的条件：hw ID不能过大，而且ID排列最好是紧密的。对于线性映射，其接口API如下：
 
 ```c
 static inline struct irq_domain *irq_domain_add_linear(struct device_node *of_node,
@@ -175,7 +183,9 @@ static inline struct irq_domain *irq_domain_add_linear(struct device_node *of_no
 }
 ```
 
-(2) Radix Tree map。建立一个Radix Tree来维护HW interrupt ID到IRQ number映射关系。HW interrupt ID作为lookup key，在Radix Tree检索到IRQ number。如果的确不能满足线性映射的条件，可以考虑Radix Tree map。实际上，内核中使用Radix Tree map的只有powerPC和MIPS的硬件平台。对于Radix Tree map，其接口API如下：
+##### (2) Radix Tree map。
+
+建立一个Radix Tree来维护HW interrupt ID到IRQ number映射关系。HW interrupt ID作为lookup key，在Radix Tree检索到IRQ number。如果的确不能满足线性映射的条件，可以考虑Radix Tree map。实际上，内核中使用Radix Tree map的只有powerPC和MIPS的硬件平台。对于Radix Tree map，其接口API如下：
 
 ```c
 static inline struct irq_domain *irq_domain_add_tree(struct device_node *of_node,
@@ -186,7 +196,9 @@ static inline struct irq_domain *irq_domain_add_tree(struct device_node *of_node
 }
 ```
 
-(3) no map。有些中断控制器很强，可以通过寄存器配置HW interrupt ID而不是由物理连接决定的。例如PowerPC 系统使用的MPIC (Multi-Processor Interrupt Controller)。在这种情况下，不需要进行映射，我们直接把IRQ number写入HW interrupt ID配置寄存器就OK了，这时候，生成的HW interrupt ID就是IRQ number，也就不需要进行mapping了。对于这种类型的映射，其接口API如下：
+##### (3) no map。
+
+有些中断控制器很强，可以通过寄存器配置HW interrupt ID而不是由物理连接决定的。例如PowerPC 系统使用的MPIC (Multi-Processor Interrupt Controller)。在这种情况下，不需要进行映射，我们直接把IRQ number写入HW interrupt ID配置寄存器就OK了，这时候，生成的HW interrupt ID就是IRQ number，也就不需要进行mapping了。对于这种类型的映射，其接口API如下：
 
 ```c
 static inline struct irq_domain *irq_domain_add_nomap(struct device_node *of_node,
@@ -204,7 +216,9 @@ static inline struct irq_domain *irq_domain_add_nomap(struct device_node *of_nod
 
 上节的内容主要是向系统注册一个irq domain，具体HW interrupt ID和IRQ number的映射关系都是空的，因此，具体各个irq domain如何管理映射所需要的database还是需要建立的。例如：对于线性映射的irq domain，我们需要建立线性映射的lookup table，对于Radix Tree map，我们要把那个反应IRQ number和HW interrupt ID的Radix tree建立起来。创建映射有四个接口函数：
 
-(1) 调用irq_create_mapping函数建立HW interrupt ID和IRQ number的映射关系。该接口函数以irq domain和HW interrupt ID为参数，返回IRQ number(这个IRQ number是动态分配的)。该函数的原型定义如下：
+##### (1) irq_create_mapping
+
+这个函数建立HW interrupt ID和IRQ number的映射关系。该接口函数以irq domain和HW interrupt ID为参数，返回IRQ number(这个IRQ number是动态分配的)。该函数的原型定义如下：
 
 ```c
 extern unsigned int irq_create_mapping(struct irq_domain *host, irq_hw_number_t hwirq);
@@ -212,8 +226,9 @@ extern unsigned int irq_create_mapping(struct irq_domain *host, irq_hw_number_t 
 
 驱动调用该函数的时候必须提供HW interrupt ID，也就是意味着driver知道自己使用的HW interrupt ID，而一般情况下，HW interrupt ID其实对具体的driver应该是不可见的，不过有些场景比较特殊，例如GPIO类型的中断，它的HW interrupt ID和GPIO有着特定的关系，driver知道自己使用那个GPIO，也就是知道使用哪一个HW interrupt ID了。
 
+##### (2) irq_create_strict_mappings
 
-(2) irq_create_strict_mappings。这个接口函数用来为一组HW interrupt ID建立映射。具体函数的原型定义如下：
+这个接口函数用来为一组HW interrupt ID建立映射。具体函数的原型定义如下：
 
 ```c
 extern int irq_create_strict_mappings(struct irq_domain *domain,
@@ -221,7 +236,9 @@ extern int irq_create_strict_mappings(struct irq_domain *domain,
     irq_hw_number_t hwirq_base, int count);
 ```
 
-(3) irq_create_of_mapping。看到函数名字中的of(open firmware)，我想你也可以猜到了几分，这个接口当然是利用device tree进行映射关系的建立。具体函数的原型定义如下：
+##### (3) irq_create_of_mapping
+
+看到函数名字中的of(open firmware)，我想你也可以猜到了几分，这个接口当然是利用device tree进行映射关系的建立。具体函数的原型定义如下：
 
 ```c
 extern unsigned int irq_create_of_mapping(struct of_phandle_args *irq_data);
@@ -234,14 +251,16 @@ unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
 {
     struct of_phandle_args oirq;
     if (of_irq_parse_one(dev, index, &oirq))－－－－分析device node中的interrupt相关属性
-    return 0;
+    	return 0;
     return irq_create_of_mapping(&oirq);－－－－－创建映射，并返回对应的IRQ number
 }
 ```
 
 对于一个使用Device tree的普通驱动程序(我们推荐这样做)，基本上初始化需要调用irq_of_parse_and_map获取IRQ number，然后调用request_threaded_irq申请中断handler。
 
-(4) irq_create_direct_mapping。这是给no map那种类型的interrupt controller使用的，这里不再赘述。
+##### (4) irq_create_direct_mapping
+
+这是给no map那种类型的interrupt controller使用的，这里不再赘述。
 
 ### 四、数据结构描述
 
@@ -254,8 +273,8 @@ struct irq_domain_ops {
     int (*map)(struct irq_domain *d, unsigned int virq, irq_hw_number_t hw);
     void (*unmap)(struct irq_domain *d, unsigned int virq);
     int (*xlate)(struct irq_domain *d, struct device_node *node,
-    const u32 *intspec, unsigned int intsize,
-    unsigned long *out_hwirq, unsigned int *out_type);
+    	const u32 *intspec, unsigned int intsize,
+    	unsigned long *out_hwirq, unsigned int *out_type);
 };
 ```
 
@@ -269,7 +288,7 @@ map和unmap是操作相反的函数，我们描述其中之一就OK了。调用m
 
 (2) 设定该IRQ number对应的中断描述符的highlevel irq-events handler
 
-(3) 设定该IRQ number对应的中断描述符的 irq chip data
+(3) 设定该IRQ number对应的中断描述符的irq chip data
 
 这些设定不适合由具体的硬件驱动来设定，因此在Interrupt controller，也就是irq domain的callback函数中设定。
 
@@ -303,25 +322,25 @@ static LIST_HEAD(irq_domain_list);
 
 struct irq_domain中的link成员就是挂入这个队列的节点。通过irq_domain_list这个指针，可以获取整个系统中HW interrupt ID和IRQ number的mapping DB。host_data定义了底层interrupt controller使用的私有数据，和具体的interrupt controller相关(对于GIC，该指针指向一个struct gic_chip_data数据结构)。
 
-对于线性映射：
+###### 对于线性映射：
 
-(1) linear_revmap保存了一个线性的lookup table，index是HW interrupt ID，table中保存了IRQ number值
+​	(1) linear_revmap保存了一个线性的lookup table，index是HW interrupt ID，table中保存了IRQ number值
 
-(2) revmap_size等于线性的lookup table的size。
+​	(2) revmap_size等于线性的lookup table的size。
 
-(3) hwirq_max保存了最大的HW interrupt ID
+​	(3) hwirq_max保存了最大的HW interrupt ID
 
-(4) revmap_direct_max_irq没有用，设定为0。revmap_tree没有用。
+​	(4) revmap_direct_max_irq没有用，设定为0。revmap_tree没有用。
 
-对于Radix Tree map：
+###### 对于Radix Tree map：
 
-(1) linear_revmap没有用，revmap_size等于0。
+​	(1) linear_revmap没有用，revmap_size等于0。
 
-(2) hwirq_max没有用，设定为一个最大值。
+​	(2) hwirq_max没有用，设定为一个最大值。
 
-(3) revmap_direct_max_irq没有用，设定为0。
+​	(3) revmap_direct_max_irq没有用，设定为0。
 
-(4) revmap_tree指向Radix tree的root node。
+​	(4) revmap_tree指向Radix tree的root node。
 
 ### 五、中断相关的Device Tree知识回顾
 
@@ -329,17 +348,17 @@ struct irq_domain中的link成员就是挂入这个队列的节点。通过irq_d
 
 对于那些产生中断的外设，我们需要定义interrupt-parent和interrupts属性：
 
-(1) interrupt-parent。表明该外设的interrupt request line物理的连接到了哪一个中断控制器上
+​	(1) interrupt-parent。表明该外设的interrupt request line物理的连接到了哪一个中断控制器上
 
-(2) interrupts。这个属性描述了具体该外设产生的interrupt的细节信息(也就是传说中的interrupt specifier)。例如：HW interrupt ID(由该外设的device node中的interrupt-parent指向的interrupt controller解析)、interrupt触发类型等。
+​	(2) interrupts。这个属性描述了具体该外设产生的interrupt的细节信息(也就是传说中的interrupt specifier)。例如：HW interrupt ID(由该外设的device node中的interrupt-parent指向的interrupt controller解析)、interrupt触发类型等。
 
 对于Interrupt controller，我们需要定义interrupt-controller和#interrupt-cells的属性：
 
-(1) interrupt-controller。表明该device node就是一个中断控制器
+​	(1) interrupt-controller。表明该device node就是一个中断控制器
 
-(2) #interrupt-cells。该中断控制器用多少个cell(一个cell就是一个32-bit的单元)描述一个外设的interrupt request line。?具体每个cell表示什么样的含义由interrupt controller自己定义。
+​	(2) #interrupt-cells。该中断控制器用多少个cell(一个cell就是一个32-bit的单元)描述一个外设的interrupt request line。?具体每个cell表示什么样的含义由interrupt controller自己定义。
 
-(3) interrupts和interrupt-parent。对于那些不是root 的interrupt controller，其本身也是作为一个产生中断的外设连接到其他的interrupt controller上，因此也需要定义interrupts和interrupt-parent的属性。
+​	(3) interrupts和interrupt-parent。对于那些不是root 的interrupt controller，其本身也是作为一个产生中断的外设连接到其他的interrupt controller上，因此也需要定义interrupts和interrupt-parent的属性。
 
 ### 六、Mapping DB的建立
 
@@ -349,11 +368,11 @@ struct irq_domain中的link成员就是挂入这个队列的节点。通过irq_d
 
 (1) DTS文件描述了系统中的interrupt controller以及外设IRQ的拓扑结构，在linux kernel启动的时候，由bootloader传递给kernel(实际传递的是DTB)。
 
-(2) 在Device Tree初始化的时候，形成了系统内所有的device node的树状结构，当然其中包括所有和中断拓扑相关的数据结构(所有的interrupt controller的node和使用中断的外设node)
+(2) 在Device Tree初始化的时候，形成了系统内所有的device node的树状结构，当然其中包括所有和中断拓扑相关的数据结构(所有的interrupt controller的node和使用中断的外设node)。
 
-(3) 在machine driver初始化的时候会调用of_irq_init函数，在该函数中会扫描所有interrupt controller的节点，并调用适合的interrupt controller driver进行初始化。毫无疑问，初始化需要注意顺序，首先初始化root，然后first level，second level，最好是leaf node。在初始化的过程中，一般会调用上节中的接口函数向系统增加irq domain。有些interrupt controller会在其driver初始化的过程中创建映射
+(3) 在machine driver初始化的时候会调用of_irq_init函数，在该函数中会扫描所有interrupt controller的节点，并调用适合的interrupt controller driver进行初始化。毫无疑问，初始化需要注意顺序，首先初始化root，然后first level，second level，最好是leaf node。在初始化的过程中，一般会调用上节中的接口函数向系统增加irq domain。有些interrupt controller会在其driver初始化的过程中创建映射。
 
-(4) 在各个driver初始化的过程中，创建映射
+(4) 在各个driver初始化的过程中，创建映射。
 
 #### 2、 interrupt controller初始化的过程中，注册irq domain
 
@@ -361,14 +380,14 @@ struct irq_domain中的link成员就是挂入这个队列的节点。通过irq_d
 
 ```c
 void __init gic_init_bases(unsigned int gic_nr, int irq_start,
-void __iomem *dist_base, void __iomem *cpu_base,
+	void __iomem *dist_base, void __iomem *cpu_base,
 u32 percpu_offset, struct device_node *node)
 {
     irq_hw_number_t hwirq_base;
     struct gic_chip_data *gic;
     int gic_irqs, irq_base, i;
     ……
-    对于root GIC
+对于root GIC
     hwirq_base = 16;
     gic_irqs = 系统支持的所有的中断数目-16。之所以减去16主要是因为root GIC的0~15号HW interrupt 是for IPI的，因此要去掉。也正因为如此hwirq_base从16开始
     irq_base = irq_alloc_descs(irq_start, 16, gic_irqs, numa_node_id());申请gic_irqs个IRQ资源，从16号开始搜索IRQ number。由于是root GIC，申请的IRQ基本上会从16号开始
@@ -390,7 +409,7 @@ struct irq_domain *irq_domain_add_legacy(struct device_node *of_node,
 {
     struct irq_domain *domain;
     domain = __irq_domain_add(of_node, first_hwirq + size,－－－－注册irq domain
-    first_hwirq + size, 0, ops, host_data);
+    	first_hwirq + size, 0, ops, host_data);
     if (!domain)
         return NULL;
     irq_domain_associate_many(domain, first_irq, first_hwirq, size); －－－创建映射
@@ -419,7 +438,7 @@ unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
 {
     struct of_phandle_args oirq;
     if (of_irq_parse_one(dev, index, &oirq))－－－－分析device node中的interrupt相关属性
-    return 0;
+    	return 0;
     return irq_create_of_mapping(&oirq);－－－－－创建映射
 }
 ```
@@ -438,11 +457,11 @@ unsigned int irq_create_of_mapping(struct of_phandle_args *irq_data)
         return 0;
     }
     if (domain->ops->xlate == NULL)－－－－－－－－－－－－－－B
-    hwirq = irq_data->args[0];
+    	hwirq = irq_data->args[0];
     else {
         if (domain->ops->xlate(domain, irq_data->np, irq_data->args,－－－－C
-        irq_data->args_count, &hwirq, &type))
-        return 0;
+        	irq_data->args_count, &hwirq, &type))
+        	return 0;
     }
     /* Create mapping */
     virq = irq_create_mapping(domain, hwirq);－－－－－－－－D
@@ -509,7 +528,7 @@ unsigned int irq_create_mapping(struct irq_domain *domain,
 
 ```c
 int irq_domain_associate(struct irq_domain *domain, unsigned int virq,
-irq_hw_number_t hwirq)
+	irq_hw_number_t hwirq)
 {
     struct irq_data *irq_data = irq_get_irq_data(virq);
     int ret;
@@ -542,19 +561,19 @@ irq_hw_number_t hwirq)
 
 ```c
 void __init gic_init_bases(unsigned int gic_nr, int irq_start,
-void __iomem *dist_base, void __iomem *cpu_base,
-u32 percpu_offset, struct device_node *node)
+	void __iomem *dist_base, void __iomem *cpu_base,
+	u32 percpu_offset, struct device_node *node)
 {
     irq_hw_number_t hwirq_base;
     struct gic_chip_data *gic;
     int gic_irqs, irq_base, i;
     ……
-    对于second GIC
+对于second GIC
     hwirq_base = 32;
     gic_irqs = 系统支持的所有的中断数目-32。之所以减去32主要是因为对于second GIC，其0~15号HW interrupt 是for IPI的，因此要去掉。而16~31号HW interrupt 是for PPI的，也要去掉。也正因为如此hwirq_base从32开始
     irq_base = irq_alloc_descs(irq_start, 16, gic_irqs, numa_node_id());申请gic_irqs个IRQ资源，从16号开始搜索IRQ number。由于是second GIC，申请的IRQ基本上会从root GIC申请的最后一个IRQ号+1开始
     gic->domain = irq_domain_add_legacy(node, gic_irqs, irq_base,
-    hwirq_base, &gic_irq_domain_ops, gic);－－－向系统注册irq domain并创建映射
+    	hwirq_base, &gic_irq_domain_ops, gic);－－－向系统注册irq domain并创建映射
     ……
 }
 ```
@@ -591,7 +610,7 @@ irq_of_parse_and_map函数相信大家已经熟悉了，这里不再描述。gic
 void __init gic_cascade_irq(unsigned int gic_nr, unsigned int irq)
 {
     if (irq_set_handler_data(irq, &gic_data[gic_nr]) != 0)－－－设置handler data
-    BUG();
+    	BUG();
     irq_set_chained_handler(irq, gic_handle_cascade_irq);－－－设置handler
 }
 ```
@@ -614,7 +633,13 @@ void __init gic_cascade_irq(unsigned int gic_nr, unsigned int irq)
 
 ### 一、前言
 
-本文主要围绕IRQ number和中断描述符(interrupt descriptor)这两个概念描述通用中断处理过程。第二章主要描述基本概念，包括什么是IRQ number，什么是中断描述符等。第三章描述中断描述符数据结构的各个成员。第四章描述了初始化中断描述符相关的接口API。第五章描述中断描述符相关的接口API。
+本文主要围绕IRQ number和中断描述符(interrupt descriptor)这两个概念描述通用中断处理过程。
+
+第二章主要描述基本概念，包括什么是IRQ number，什么是中断描述符等。
+
+第三章描述中断描述符数据结构的各个成员。
+
+第四章描述了初始化中断描述符相关的接口API。第五章描述中断描述符相关的接口API。
 
 ### 二、基本概念
 
@@ -647,7 +672,7 @@ irqreturn_t handle_IRQ_event(unsigned int irq, struct irqaction *action)
 {
     ……
     if (!(action->flags & IRQF_DISABLED))
-    local_irq_enable_in_hardirq();
+    	local_irq_enable_in_hardirq();
     ……
 }
 ```
@@ -751,19 +776,19 @@ struct irq_desc {
     unsigned int        irqs_unhandled;
     raw_spinlock_t        lock;－－－－－－－－－－－(7)
     struct cpumask        *percpu_enabled;－－－－－－－(8)
-    #ifdef CONFIG_SMP
+#ifdef CONFIG_SMP
     const struct cpumask    *affinity_hint;－－－－和irq affinity相关，后续单独文档描述
     struct irq_affinity_notify *affinity_notify;
-    #ifdef CONFIG_GENERIC_PENDING_IRQ
+#ifdef CONFIG_GENERIC_PENDING_IRQ
     cpumask_var_t        pending_mask;
-    #endif
-    #endif
+#endif
+#endif
     unsigned long        threads_oneshot; －－－－－(9)
     atomic_t        threads_active;
     wait_queue_head_t       wait_for_threads;
-    #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_PROC_FS
     struct proc_dir_entry    *dir;－－－－－－－－该IRQ对应的proc接口
-    #endif
+#endif
     int            parent_irq;
     struct module        *owner;
     const char        *name;
@@ -772,19 +797,19 @@ struct irq_desc {
 
 (1) handle_irq就是highlevel irq-events handler，何谓high level?站在高处自然看不到细节。我认为high level是和specific相对，specific handler处理具体的事务，例如处理一个按键中断、处理一个磁盘中断。而high level则是对处理各种中断交互过程的一个抽象，根据下列硬件的不同：
 
-​    (a) 中断控制器
+​	(a) 中断控制器
 
-​    (b) IRQ trigger type
+​	(b) IRQ trigger type
 
 highlevel irq-events handler可以分成：
 
-​    (a) 处理电平触发类型的中断handler(handle_level_irq)
+​	(a) 处理电平触发类型的中断handler(handle_level_irq)
 
-​    (b) 处理边缘触发类型的中断handler(handle_edge_irq)
+​	(b) 处理边缘触发类型的中断handler(handle_edge_irq)
 
-​    (c) 处理简单类型的中断handler(handle_simple_irq)
+​	(c) 处理简单类型的中断handler(handle_simple_irq)
 
-​    (d) 处理EOI类型的中断handler(handle_fasteoi_irq)
+​	(d) 处理EOI类型的中断handler(handle_fasteoi_irq)
 
 会另外有一份文档对high level handler进行更详细的描述。
 
@@ -831,7 +856,7 @@ int __init early_irq_init(void)
 }
 ```
 
-2、使用Radix tree的中断描述符初始化
+### 2、使用Radix tree的中断描述符初始化
 
 ```c
 int __init early_irq_init(void)
@@ -1006,7 +1031,7 @@ out:
 
 #### 一、 如何进入high level irq event handler
 
-1、 从具体CPU architecture的中断处理到machine相关的处理模块
+##### 1、 从具体CPU architecture的中断处理到machine相关的处理模块
 
 说到具体的CPU，我们还是用ARM为例好了。对于ARM，我们在ARM中断处理文档中已经有了较为细致的描述。这里我们看看如何从从具体CPU的中断处理到machine相关的处理模块 ，其具体代码如下：
 
@@ -1046,7 +1071,7 @@ handle_arch_irq = mdesc->handle_irq;
 
 关于MULTI_IRQ_HANDLER这个配置项，我们可以再多说几句。当然，其实这个配置项的名字已经出卖它了。multi irq handler就是说系统中有多个irq handler，可以在run time的时候指定。为何要run time的时候，从多个handler中选择一个呢?HW interrupt block难道不是固定的吗?我的理解(猜想)是：一个kernel的image支持多个HW platform，对于不同的HW platform，在运行时检查HW platform的类型，设定不同的irq handler。
 
-2、 interrupt controller相关的代码
+##### 2、 interrupt controller相关的代码
 
 我们还是以2个级联的GIC为例来描述interrupt controller相关的代码。代码如下：
 
@@ -1087,7 +1112,7 @@ void handle_IRQ(unsigned int irq, struct pt_regs *regs)
 }
 ```
 
-3、 调用high level handler
+##### 3、 调用high level handler
 
 调用high level handler的代码逻辑非常简单，如下：
 
@@ -1108,7 +1133,7 @@ static inline void generic_handle_irq_desc(unsigned int irq, struct irq_desc *de
 
 ### 二、理解high level irq event handler需要的知识准备
 
-1、 自动探测IRQ
+#### 1、 自动探测IRQ
 
 一个硬件驱动可以通过下面的方法进行自动探测它使用的IRQ：
 
@@ -1154,9 +1179,9 @@ unsigned long probe_irq_on(void)
 
 (1) 那些能自动探测IRQ的中断描述符需要具体两个条件：
 
-a、 该中断描述符还没有通过request_threaded_irq或者其他方式申请该IRQ的specific handler(也就是irqaction数据结构)
+​	a、 该中断描述符还没有通过request_threaded_irq或者其他方式申请该IRQ的specific handler(也就是irqaction数据结构)
 
-b、 该中断描述符允许自动探测(不能设定IRQ_NOPROBE)
+​	b、 该中断描述符允许自动探测(不能设定IRQ_NOPROBE)
 
 (2) 如果满足上面的条件，那么该中断描述符属于备选描述符。设定其internal state为IRQS_AUTODETECT | IRQS_WAITING。IRQS_AUTODETECT表示本IRQ正处于自动探测中。
 
@@ -1188,20 +1213,20 @@ int probe_irq_off(unsigned long val)
                 nr_of_irqs++;
             }
             desc->istate &= ~IRQS_AUTODETECT; －－－－IRQS_WAITING没有被清除，说明该描述符
-            irq_shutdown(desc);                                     不是自动探测的那个，shutdown之
+            irq_shutdown(desc);                       不是自动探测的那个，shutdown之
         }
         raw_spin_unlock_irq(&desc->lock);
     }
     mutex_unlock(&probing_active);
     if (nr_of_irqs > 1) －－－－－－如果找到多于1个的IRQ，说明探测失败，返回负的IRQ个数信息
-    irq_found = -irq_found;
+    	irq_found = -irq_found;
     return irq_found;
 }
 ```
 
 因为在调用probe_irq_off已经触发了自动探测IRQ的那个硬件中断，因此在该中断的high level handler的执行过程中，该硬件对应的中断描述符的IRQS_WAITING标致应该已经被清除，因此probe_irq_off函数scan中断描述符DB，找到处于auto probe中，而且IRQS_WAITING标致被清除的那个IRQ。如果找到一个，那么探测OK，返回该IRQ number，如果找到多个，说明探测失败，返回负的IRQ个数信息，没有找到的话，返回0。
 
-2、 resend一个中断
+##### 2、 resend一个中断
 
 一个ARM SOC总是有很多的GPIO，有些GPIO可以提供中断功能，这些GPIO的中断可以配置成level trigger或者edge trigger。一般而言，大家都更喜欢用level trigger的中断。有的SOC只能是有限个数的GPIO可以配置成电平中断，因此，在项目初期进行pin define的时候，大家都在争抢电平触发的GPIO。
 
@@ -1227,7 +1252,7 @@ void check_irq_resend(struct irq_desc *desc, unsigned int irq)
         return;
     }
     if (desc->istate & IRQS_REPLAY)－－－－如果已经设定resend的flag，退出就OK了，这个应该
-        return;                                                和irq的enable disable能多层嵌套相关
+        return;                           和irq的enable disable能多层嵌套相关
     if (desc->istate & IRQS_PENDING) {－－－－－－－如果有pending的flag则进行处理
         desc->istate &= ~IRQS_PENDING;
         desc->istate |= IRQS_REPLAY; －－－－－－设置retrigger标志
@@ -1249,7 +1274,7 @@ desc->istate &= ~(IRQS_REPLAY | IRQS_WAITING);
 
 这里会清除IRQS_REPLAY状态，表示该中断已经被retrigger，一次resend interrupt的过程结束。
 
-3、 unhandled interrupt和spurious interrupt
+#### 3、 unhandled interrupt和spurious interrupt
 
 在中断处理的最后，总会有一段代码如下：
 
@@ -1356,7 +1381,7 @@ out:
 
 ### 三、和high level irq event handler相关的硬件描述
 
-1、 CPU layer和Interrupt controller之间的接口
+#### 1、 CPU layer和Interrupt controller之间的接口
 
 从逻辑层面上看，CPU和interrupt controller之间的接口包括：
 
@@ -1368,7 +1393,7 @@ out:
 
 (4) 控制总线和数据总线接口。通过这些接口，CPU可以访问(读写)interrupt controller的寄存器。
 
-2、 Interrupt controller和Peripheral device之间的接口
+#### 2、 Interrupt controller和Peripheral device之间的接口
 
 所有的系统中，Interrupt controller和Peripheral device之间的接口都是一个Interrupt Request信号线。外设通过这个信号线上的电平或者边缘向CPU(实际上是通过interrupt controller)申请中断服务。
 
@@ -1376,7 +1401,7 @@ out:
 
 本章主要介绍几种典型的high level irq event handler，在进行high level irq event handler的设定的时候需要注意，不是外设使用电平触发就选用handle_level_irq，选用什么样的high level irq event handler是和Interrupt controller的行为以及外设电平触发方式决定的。介绍每个典型的handler之前，我会简单的描述该handler要求的硬件行为，如果该外设的中断系统符合这个硬件行为，那么可以选择该handler为该中断的high level irq event handler。
 
-1、边缘触发的handler。
+#### 1、边缘触发的handler。
 
 使用handle_edge_irq这个handler的硬件中断系统行为如下：
 
@@ -1436,11 +1461,11 @@ irqreturn_t handle_irq_event(struct irq_desc *desc)
 
 (1) 判断是否需要执行下面的action list的处理。这里分成几种情况：
 
-a、 该中断事件已经被其他的CPU处理了
+​	a、 该中断事件已经被其他的CPU处理了
 
-b、 该中断被其他的CPU disable了
+​	b、 该中断被其他的CPU disable了
 
-c、 该中断描述符没有注册specific handler。这个比较简单，如果没有irqaction，根本没有必要调用action list的处理
+​	c、 该中断描述符没有注册specific handler。这个比较简单，如果没有irqaction，根本没有必要调用action list的处理
 
 如果该中断事件已经被其他的CPU处理了，那么我们仅仅是设定pending状态(为了委托正在处理的该中断的那个CPU进行处理)，mask_ack_irq该中断并退出就OK了，并不做具体的处理。另外正在处理该中断的CPU会检查pending状态，并进行处理的。同样的，如果该中断被其他的CPU disable了，本就不应该继续执行该中断的specific handler，我们也是设定pending状态，mask and ack中断就退出了。当其他CPU的代码离开临界区，enable 该中断的时候，软件会检测pending状态并resend该中断。
 
@@ -1482,7 +1507,7 @@ irqreturn_t handle_irq_event(struct irq_desc *desc)
 
 (6) 只要有pending标记，就说明该中断还在pending状态，需要继续处理。当然，如果有其他的CPU disable了该interrupt source，那么本次中断结束处理。
 
-2、电平触发的handler
+#### 2、电平触发的handler
 
 使用handle_level_irq这个handler的硬件中断系统行为如下：
 
@@ -1537,11 +1562,15 @@ TODO
 
 本文主要的议题是作为一个普通的驱动工程师，在撰写自己负责的驱动的时候，如何向Linux Kernel中的中断子系统注册中断处理函数?
 
-为了理解注册中断的接口，必须了解一些中断线程化(threaded interrupt handler)的基础知识，这些在第二章描述。第三章主要描述了驱动申请 interrupt line接口API request_threaded_irq的规格。第四章是进入request_threaded_irq的实现细节，分析整个代码的执行过程。
+为了理解注册中断的接口，必须了解一些中断线程化(threaded interrupt handler)的基础知识，这些在第二章描述。
+
+第三章主要描述了驱动申请 interrupt line接口API request_threaded_irq的规格。
+
+第四章是进入request_threaded_irq的实现细节，分析整个代码的执行过程。
 
 ### 二、和中断相关的linux实时性分析以及中断线程化的背景介绍
 
-1、非抢占式linux内核的实时性
+#### 1、非抢占式linux内核的实时性
 
 在遥远的过去，linux2.4之前的内核是不支持抢占特性的，具体可以参考下图：
 
@@ -1551,13 +1580,13 @@ TODO
 
 中断虽然发生了，但软件不一定立刻响应，可能由于在内核态执行的某些操作不希望被外部事件打断而主动关闭了中断(或是关闭了CPU的中断，或者MASK了该IRQ number)，这时候，中断信号没有立刻得到响应，软件仍然在内核态执行低优先级任务系统调用的代码。在T1时刻，内核态代码由于退出临界区而打开中断(注意：上图中的比例是不协调的，一般而言，linux kernel不会有那么长的关中断时间，上面主要是为了表示清楚，同理，从中断触发到具体中断服务程序的执行也没有那么长，都是为了表述清楚)，中断一旦打开，立刻跳转到了异常向量地址，interrupt handler抢占了低优先级任务的执行，进入中断上下文(虽然这时候的current task是低优先级任务，但是中断上下文和它没有任何关系)。
 
-从CPU开始处理中断到具体中断服务程序被执行还需要一个分发的过程。这个期间系统要做的主要操作包括确定HW interrupt ID，确定IRQ Number，ack或者mask中断，调用中断服务程序等。T0到T2之间的delay被称为中断延迟(Interrupt Latency)，主要包括两部分，一部分是HW造成的delay(硬件的中断系统识别外部的中断事件并signal到CPU)，另外一部分是软件原因(内核代码中由于要保护临界区而关闭中断引起的)。
+从CPU开始处理中断到具体中断服务程序被执行还需要一个分发的过程。这个期间系统要做的主要操作包括确定HW interrupt ID，确定IRQ Number，ack或者mask中断，调用中断服务程序等。T0到T2之间的delay被称为**中断延迟(Interrupt Latency)**，主要包括两部分，一部分是HW造成的delay(硬件的中断系统识别外部的中断事件并signal到CPU)，另外一部分是软件原因(内核代码中由于要保护临界区而关闭中断引起的)。
 
-该中断的服务程序执行完毕(在其执行过程中，T3时刻，会唤醒高优先级任务，让它从sleep状态进入runable状态)，返回低优先级任务的系统调用现场，这时候并不存在一个抢占点，低优先级任务要完成系统调用之后，在返回用户空间的时候才出现抢占点。漫长的等待之后，T4时刻，调度器调度高优先级任务执行。有一个术语叫做任务响应时间(Task Response Time)用来描述T3到T4之间的delay。
+该中断的服务程序执行完毕(在其执行过程中，T3时刻，会唤醒高优先级任务，让它从sleep状态进入runable状态)，返回低优先级任务的系统调用现场，这时候并不存在一个抢占点，低优先级任务要完成系统调用之后，在返回用户空间的时候才出现抢占点。漫长的等待之后，T4时刻，调度器调度高优先级任务执行。有一个术语叫做**任务响应时间(Task Response Time)**用来描述T3到T4之间的delay。
 
-2、 抢占式linux内核的实时性
+#### 2、 抢占式linux内核的实时性
 
-2.6内核和2.4内核显著的不同是提供了一个CONFIG_PREEMPT的选项，打开该选项后，linux kernel就支持了内核代码的抢占(当然不能在临界区)，其行为如下：
+2.6内核和2.4内核显著的不同是提供了一个**CONFIG_PREEMPT**的选项，打开该选项后，linux kernel就支持了内核代码的抢占(当然不能在临界区)，其行为如下：
 
 ![](attachment\5.2.gif)
 
@@ -1565,13 +1594,13 @@ T0到T3的操作都是和上一节的描述一样的，不同的地方是在T4�
 
 在非抢占式linux内核中，一个任务的内核态是不可以被其他进程抢占的。这里并不是说kernel space不可以被抢占，只是说进程通过系统调用陷入到内核的时候，不可以被其他的进程抢占。实际上，中断上下文当然可以抢占进程上下文(无论是内核态还是用户态)，更进一步，中断上下文是拥有至高无上的权限，它甚至可以抢占其他的中断上下文。引入抢占式内核后，系统的平均任务响应时间会缩短，但是，实时性更关注的是：无论在任何的负载情况下，任务响应时间是确定的。因此，更需要关注的是worst-case的任务响应时间。这里有两个因素会影响worst case latency：
 
-(1) 为了同步，内核中总有些代码需要持有自旋锁资源，或者显式的调用preempt_disable来禁止抢占，这时候不允许抢占
+​    (1) 为了同步，内核中总有些代码需要持有自旋锁资源，或者显式的调用preempt_disable来禁止抢占，这时候不允许抢占
 
-(2) 中断上下文(并非只是中断handler，还包括softirq、timer、tasklet)总是可以抢占进程上下文
+​    (2) 中断上下文(并非只是中断handler，还包括softirq、timer、tasklet)总是可以抢占进程上下文
 
 因此，即便是打开了PREEMPT的选项，实际上linux系统的任务响应时间仍然是不确定的。一方面内核代码的临界区非常多，我们需要找到，系统中持有锁，或者禁止抢占的最大的时间片。另外一方面，在上图的T4中，能顺利的调度高优先级任务并非易事，这时候可能有触发的软中断，也可能有新来的中断，也可能某些driver的tasklet要执行，只有在没有任何bottom half的任务要执行的时候，调度器才会启动调度。
 
-3、 进一步提高linux内核的实时性
+#### 3、 进一步提高linux内核的实时性
 
 通过上一个小节的描述，相信大家都确信中断对linux 实时性的最大的敌人。那么怎么破?我曾经接触过一款RTOS，它的中断handler非常简单，就是发送一个inter-task message到该driver thread，对任何的一个驱动都是如此处理。这样，每个中断上下文都变得非常简短，而且每个中断都是一致的。在这样的设计中，外设中断的处理线程化了，然后，系统设计师要仔细的为每个系统中的task分配优先级，确保整个系统的实时性。
 
@@ -1579,7 +1608,7 @@ T0到T3的操作都是和上一节的描述一样的，不同的地方是在T4�
 
 ### 三、request_threaded_irq的接口规格
 
-1、 输入参数描述
+#### 1、 输入参数描述
 
 | 输入参数      | 描述                                       |
 | --------- | ---------------------------------------- |
@@ -1590,11 +1619,11 @@ T0到T3的操作都是和上一节的描述一样的，不同的地方是在T4�
 | devname   |                                          |
 | dev_id    | 参见第四章，第一节中的描述。                           |
 
-2、 输出参数描述
+#### 2、 输出参数描述
 
 0表示成功执行，负数表示各种错误原因。
 
-3、 Interrupt type flags
+#### 3、 Interrupt type flags
 
 | flag定义            | 描述                                       |
 | ----------------- | ---------------------------------------- |
@@ -1614,20 +1643,21 @@ T0到T3的操作都是和上一节的描述一样的，不同的地方是在T4�
 
 ### 四、request_threaded_irq代码分析
 
-1、 request_threaded_irq主流程
+#### 1、 request_threaded_irq主流程
 
 ```c
 int request_threaded_irq(unsigned int irq, irq_handler_t handler,
-irq_handler_t thread_fn, unsigned long irqflags,
-const char *devname, void *dev_id)
+	irq_handler_t thread_fn, unsigned long irqflags,
+	const char *devname, void *dev_id)
 {
     if ((irqflags & IRQF_SHARED) && !dev_id)－－－－－－－－－(1)
         return -EINVAL;
     desc = irq_to_desc(irq); －－－－－－－－－－－－－－－－－(2)
-    if (!desc)         return -EINVAL;
-        if (!irq_settings_can_request(desc) || －－－－－－－－－－－－(3)
-            WARN_ON(irq_settings_is_per_cpu_devid(desc)))
-            return -EINVAL;
+    if (!desc)
+      return -EINVAL;
+	if (!irq_settings_can_request(desc) || －－－－－－－－－－－－(3)
+		WARN_ON(irq_settings_is_per_cpu_devid(desc)))
+		return -EINVAL;
     if (!handler) { －－－－－－－－－－－－－－－－－－－－－－(4)
         if (!thread_fn)
             return -EINVAL;
@@ -1647,7 +1677,9 @@ const char *devname, void *dev_id)
 
 (1) 对于那些需要共享的中断，在request irq的时候需要给出dev id，否则会出错退出。为何对于IRQF_SHARED的中断必须要给出dev id呢?实际上，在共享的情况下，一个IRQ number对应若干个irqaction，当操作irqaction的时候，仅仅给出IRQ number就不是非常的足够了，这时候，需要一个ID表示具体的irqaction，这里就是dev_id的作用了。我们举一个例子：
 
+```c
 void free_irq(unsigned int irq, void *dev_id)
+```
 
 当释放一个IRQ资源的时候，不但要给出IRQ number，还要给出device ID。只有这样，才能精准的把要释放的那个irqaction 从irq action list上移除。dev_id在中断处理中有没有作用呢?我们来看看source code：
 
@@ -1691,15 +1723,15 @@ chip_bus_lock定义如下：
 static inline void chip_bus_lock(struct irq_desc *desc)
 {
     if (unlikely(desc->irq_data.chip->irq_bus_lock))
-    desc->irq_data.chip->irq_bus_lock(&desc->irq_data);
+    	desc->irq_data.chip->irq_bus_lock(&desc->irq_data);
 }
 ```
 
 大部分的interrupt controller并没有定义irq_bus_lock这个callback函数，因此chip_bus_lock这个函数对大多数的中断控制器而言是没有实际意义的。但是，有些interrupt controller是连接到慢速总线上的，例如一个i2c接口的IO expander芯片(这种芯片往往也提供若干有中断功能的GPIO，因此也是一个interrupt controller)，在访问这种interrupt controller的时候需要lock住那个慢速bus(只能有一个client在使用I2C bus)。
 
-2、 注册irqaction
+#### 2、 注册irqaction
 
-(1) nested IRQ的处理代码
+##### (1) nested IRQ的处理代码
 
 在看具体的代码之前，我们首先要理解什么是nested IRQ。nested IRQ不是cascade IRQ，在GIC代码分析中我们有描述过cascade IRQ这个概念，主要用在interrupt controller级联的情况下。为了方便大家理解，我还是给出一个具体的例子吧，具体的HW block请参考下图：
 
@@ -1707,11 +1739,11 @@ static inline void chip_bus_lock(struct irq_desc *desc)
 
 上图是一个两个GIC级联的例子，所有的HW block封装在了一个SOC chip中。为了方便描述，我们先进行编号：Secondary GIC的IRQ number是A，外设1的IRQ number是B，外设2的IRQ number是C。对于上面的硬件，linux kernel处理如下：
 
-(a) IRQ A的中断描述符被设定为不能注册irqaction(不能注册specific interrupt handler，或者叫中断服务程序)
+​	(a) IRQ A的中断描述符被设定为不能注册irqaction(不能注册specific interrupt handler，或者叫中断服务程序)
 
-(b) IRQ A的highlevel irq-events handler(处理interrupt flow control)负责进行IRQ number的映射，在其irq domain上翻译出具体外设的IRQ number，并重新定向到外设IRQ number对应的highlevel irq-events handler。
+​	(b) IRQ A的highlevel irq-events handler(处理interrupt flow control)负责进行IRQ number的映射，在其irq domain上翻译出具体外设的IRQ number，并重新定向到外设IRQ number对应的highlevel irq-events handler。
 
-(c) 所有外设驱动的中断正常request irq，可以任意选择线程化的handler，或者只注册primary handler。
+​	(c) 所有外设驱动的中断正常request irq，可以任意选择线程化的handler，或者只注册primary handler。
 
 需要注意的是，对root GIC和Secondary GIC寄存器的访问非常快，因此ack、mask、EOI等操作也非常快。
 
@@ -1723,11 +1755,11 @@ IO expander HW block提供了有中断功能的GPIO，因此它也是一个inter
 
 不行，对于GIC级联的情况，如果secondary GIC上的外设1产生了中断，整个关中断的时间是IRQ A的中断描述符的highlevel irq-events handler处理时间+IRQ B的的中断描述符的highlevel irq-events handler处理时间+外设1的primary handler的处理时间。所幸对root GIC和Secondary GIC寄存器的访问非常快，因此整个关中断的时间也不是非常的长。但是如果是IO expander这个情况，如果采取和上面GIC级联的处理方式一样的话，关中断的时间非常长。我们还是用外设1产生的中断为例子好了。这时候，由于IRQ B的的中断描述符的highlevel irq-events handler处理设计I2C的操作，因此时间非常的长，这时候，对于整个系统的实时性而言是致命的打击。对这种硬件情况，linux kernel处理如下：
 
-(a) IRQ A的中断描述符的highlevel irq-events handler根据实际情况进行设定，并且允许注册irqaction。对于连接到IO expander上的外设，它是没有real time的要求的(否则也不会接到IO expander上)，因此一般会进行线程化处理。由于threaded handler中涉及I2C操作，因此要设定IRQF_ONESHOT的flag。
+​	(a) IRQ A的中断描述符的highlevel irq-events handler根据实际情况进行设定，并且允许注册irqaction。对于连接到IO expander上的外设，它是没有real time的要求的(否则也不会接到IO expander上)，因此一般会进行线程化处理。由于threaded handler中涉及I2C操作，因此要设定IRQF_ONESHOT的flag。
 
-(b) 在IRQ A的中断描述符的threaded interrupt handler中进行进行IRQ number的映射，在IO expander irq domain上翻译出具体外设的IRQ number，并直接调用handle_nested_irq函数处理该IRQ。
+​	(b) 在IRQ A的中断描述符的threaded interrupt handler中进行进行IRQ number的映射，在IO expander irq domain上翻译出具体外设的IRQ number，并直接调用handle_nested_irq函数处理该IRQ。
 
-(c) 外设对应的中断描述符设定IRQ_NESTED_THREAD的flag，表明这是一个nested IRQ。nested IRQ没有highlevel irq-events handler，也没有primary handler，它的threaded interrupt handler是附着在其parent IRQ的threaded handler上的。
+​	(c) 外设对应的中断描述符设定IRQ_NESTED_THREAD的flag，表明这是一个nested IRQ。nested IRQ没有highlevel irq-events handler，也没有primary handler，它的threaded interrupt handler是附着在其parent IRQ的threaded handler上的。
 
 具体的nested IRQ的处理代码如下：
 
@@ -1751,7 +1783,7 @@ static int __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction
 
 如果一个中断描述符是nested thread type的，说明这个中断描述符应该设定threaded interrupt handler(当然，内核是不会单独创建一个thread的，它是借着其parent IRQ的interrupt thread执行)，否则就会出错返回。对于primary handler，它应该没有机会被调用到，当然为了调试，kernel将其设定为irq_nested_primary_handler，以便在调用的时候打印一些信息，让工程师直到发生了什么状况。
 
-(2) forced irq threading处理
+##### (2) forced irq threading处理
 
 具体的forced irq threading的处理代码如下：
 
@@ -1815,7 +1847,7 @@ const char *name, void *dev)
 
 (d-2)在那些被强制线程化的中断线程中，disable bottom half的处理。这是因为在旧的中断处理机制中，botton half是不可能抢占top half的执行，强制线程化之后，应该保持这一点。
 
-(3) 创建interrupt线程。代码如下：
+##### (3) 创建interrupt线程。代码如下：
 
 ```c
 if (new->thread_fn && !nested) {
@@ -1848,43 +1880,26 @@ new->flags &= ~IRQF_ONESHOT;
 
 (e) 驱动工程师是撰写具体外设驱动的，他/她未必会了解到底层的一些具体的interrupt controller的信息。有些interrupt controller(例如MSI based interrupt)本质上就是就是one shot的(通过IRQCHIP_ONESHOT_SAFE标记)，因此驱动工程师设定的IRQF_ONESHOT其实是画蛇添足，因此可以去掉。
 
-(4) 共享中断的检查。代码如下：
+##### (4) 共享中断的检查。代码如下：
 
 ```c
 old_ptr = &desc->action;
-
 old = *old_ptr;
-
 if (old) {
-
-if (!((old->flags & new->flags) & IRQF_SHARED) ||－－－－－－－－－－－－－－－－－(a)
-
-((old->flags ^ new->flags) & IRQF_TRIGGER_MASK) ||
-
-((old->flags ^ new->flags) & IRQF_ONESHOT))
-
-goto mismatch;
-
-/* All handlers must agree on per-cpuness */
-
-if ((old->flags & IRQF_PERCPU) != (new->flags & IRQF_PERCPU))
-
-goto mismatch;
-
-/* add new interrupt at end of irq queue */
-
-do {－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－(b)
-
-thread_mask |= old->thread_mask;
-
-old_ptr = &old->next;
-
-old = *old_ptr;
-
-} while (old);
-
-shared = 1;
-
+	if (!((old->flags & new->flags) & IRQF_SHARED) ||－－－－－－－－－－－－－－－－－(a)
+		((old->flags ^ new->flags) & IRQF_TRIGGER_MASK) ||
+		((old->flags ^ new->flags) & IRQF_ONESHOT))
+		goto mismatch;
+	/* All handlers must agree on per-cpuness */
+	if ((old->flags & IRQF_PERCPU) != (new->flags & IRQF_PERCPU))
+		goto mismatch;
+	/* add new interrupt at end of irq queue */
+	do {－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－－(b)
+		thread_mask |= old->thread_mask;
+		old_ptr = &old->next;
+		old = *old_ptr;
+	} while (old);
+	shared = 1;
 }
 ```
 
@@ -1892,7 +1907,7 @@ shared = 1;
 
 (b) 将该irqaction挂入队列的尾部。
 
-(5) thread mask的设定。代码如下：
+##### (5) thread mask的设定。代码如下：
 
 ```c
 if (new->flags & IRQF_ONESHOT) {
@@ -1902,9 +1917,9 @@ if (new->flags & IRQF_ONESHOT) {
     }
     new->thread_mask = 1 << ffz(thread_mask);
 } else if (new->handler == irq_default_primary_handler &&
-!(desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)) {－－－－－－－－(b)
-    ret = -EINVAL;
-    goto out_mask;
+	!(desc->irq_data.chip->flags & IRQCHIP_ONESHOT_SAFE)) {－－－－－－－－(b)
+		ret = -EINVAL;
+		goto out_mask;
 }
 ```
 
@@ -1923,7 +1938,7 @@ static irqreturn_t irq_default_primary_handler(int irq, void *dev_id)
 
 代码非常的简单，返回IRQ_WAKE_THREAD，让kernel唤醒threaded handler就OK了。使用irq_default_primary_handler虽然简单，但是有一个风险：如果是电平触发的中断，我们需要操作外设的寄存器才可以让那个asserted的电平信号消失，否则它会一直持续。一般，我们都是直接在primary中操作外设寄存器(slow bus类型的interrupt controller不行)，尽早的clear interrupt，但是，对于irq_default_primary_handler，它仅仅是wakeup了threaded interrupt handler，并没有clear interrupt，这样，执行完了primary handler，外设中断仍然是asserted，一旦打开CPU中断，立刻触发下一次的中断，然后不断的循环。因此，如果注册中断的时候没有指定primary interrupt handler，并且没有设定IRQF_ONESHOT，那么系统是会报错的。当然，有一种情况可以豁免，当底层的irq chip是one shot safe的(IRQCHIP_ONESHOT_SAFE)。
 
-(6) 用户IRQ flag和底层interrupt flag的同步(TODO)
+##### (6) 用户IRQ flag和底层interrupt flag的同步(TODO)
 
 ## (六)：ARM中断处理过程
 
@@ -1943,7 +1958,7 @@ static irqreturn_t irq_default_primary_handler(int irq, void *dev_id)
 
 ### 二、中断处理的准备过程
 
-1、中断模式的stack准备
+#### 1、中断模式的stack准备
 
 ARM处理器有多种processor mode，例如user mode(用户空间的AP所处于的模式)、supervisor mode(即SVC mode，大部分的内核态代码都处于这种mode)、IRQ mode(发生中断后，处理器会切入到该mode)等。对于linux kernel，其中断处理处理过程中，ARM 处理器大部分都是处于SVC mode。但是，实际上产生中断的时候，ARM处理器实际上是进入IRQ mode，因此在进入真正的IRQ异常处理之前会有一小段IRQ mode的操作，之后会进入SVC mode进行真正的IRQ异常处理。由于IRQ mode只是一个过度，因此IRQ mode的栈很小，只有12个字节，具体如下：
 
@@ -1995,11 +2010,11 @@ void notrace cpu_init(void)
 
 嵌入式汇编的语法格式是：asm(code : output operand list : input operand list : clobber list);大家对着上面的code就可以分开各段内容了。在input operand list中，有两种限制符(constraint)，"r"或者"I"，"I"表示立即数(Immediate operands)，"r"表示用通用寄存器传递参数。clobber list中有一个r14，表示在汇编代码中修改了r14的值，这些信息是编译器需要的内容。
 
-对于SMP，bootstrap CPU会在系统初始化的时候执行cpu_init函数，进行本CPU的irq、abt和und三种模式的内核栈的设定，具体调用序列是：start_kernel--->setup_arch--->setup_processor--->cpu_init。对于系统中其他的CPU，bootstrap CPU会在系统初始化的最后，对每一个online的CPU进行初始化，具体的调用序列是：start_kernel--->rest_init--->kernel_init--->kernel_init_freeable--->kernel_init_freeable--->smp_init--->cpu_up--->_cpu_up--->__cpu_up。__cpu_up函数是和CPU architecture相关的。对于ARM，其调用序列是__cpu_up--->boot_secondary--->smp_ops.smp_boot_secondary(SOC相关代码)--->secondary_startup--->__secondary_switched--->secondary_start_kernel--->cpu_init。
+对于SMP，bootstrap CPU会在系统初始化的时候执行cpu_init函数，进行本CPU的irq、abt和und三种模式的内核栈的设定，具体调用序列是：start_kernel--->setup_arch--->setup_processor--->cpu_init。对于系统中其他的CPU，bootstrap CPU会在系统初始化的最后，对每一个online的CPU进行初始化，具体的调用序列是：start_kernel--->rest_init--->kernel_init--->kernel_init_freeable--->kernel_init_freeable--->smp_init--->cpu_up--->_cpu_up--->__cpu_up。__cpu_up函数是和CPU architecture相关的。对于ARM，其调用序列是cpu_up--->boot_secondary--->smp_ops.smp_boot_secondary(SOC相关代码)--->secondary_startup--->secondary_switched--->secondary_start_kernel--->cpu_init。
 
 除了初始化，系统电源管理也需要irq、abt和und stack的设定。如果我们设定的电源管理状态在进入sleep的时候，CPU会丢失irq、abt和und stack point寄存器的值，那么在CPU resume的过程中，要调用cpu_init来重新设定这些值。
 
-2、 SVC模式的stack准备
+#### 2、 SVC模式的stack准备
 
 我们经常说进程的用户空间和内核空间，对于一个应用程序而言，可以运行在用户空间，也可以通过系统调用进入内核空间。在用户空间，使用的是用户栈，也就是我们软件工程师编写用户空间程序的时候，保存局部变量的stack。陷入内核后，当然不能用用户栈了，这时候就需要使用到内核栈。所谓内核栈其实就是处于SVC mode时候使用的栈。
 
@@ -2029,7 +2044,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
 
 底部是struct thread_info数据结构，顶部(高地址)就是该进程的内核栈。当进程切换的时候，整个硬件和软件的上下文都会进行切换，这里就包括了svc mode的sp寄存器的值被切换到调度算法选定的新的进程的内核栈上来。
 
-3、 异常向量表的准备
+#### 3、 异常向量表的准备
 
 对于ARM处理器而言，当发生异常的时候，处理器会暂停当前指令的执行，保存现场，转而去执行对应的异常向量处的指令，当处理完该异常的时候，恢复现场，回到原来的那点去继续执行程序。系统所有的异常向量(共计8个)组成了异常向量表。向量表(vector table)的代码如下：
 
@@ -2047,11 +2062,11 @@ __vectors_start:
 ```
 对于本文而言，我们重点关注vector_irq这个exception vector。异常向量表可能被安放在两个位置上：
 
-(1) 异常向量表位于0x0的地址。这种设置叫做Normal vectors或者Low vectors。
+​	(1) 异常向量表位于0x0的地址。这种设置叫做Normal vectors或者Low vectors。
 
-(2) 异常向量表位于0xffff0000的地址。这种设置叫做high vectors
+​	(2) 异常向量表位于0xffff0000的地址。这种设置叫做high vectors
 
-具体是low vectors还是high vectors是由ARM的一个叫做的SCTLR寄存器的第13个bit (vector bit)控制的。对于启用MMU的ARM Linux而言，系统使用了high vectors。为什么不用low vector呢?对于linux而言，0~3G的空间是用户空间，如果使用low vector，那么异常向量表在0地址，那么则是用户空间的位置，因此linux选用high vector。当然，使用Low vector也可以，这样Low vector所在的空间则属于kernel space了(也就是说，3G~4G的空间加上Low vector所占的空间属于kernel space)，不过这时候要注意一点，因为所有的进程共享kernel space，而用户空间的程序经常会发生空指针访问，这时候，内存保护机制应该可以捕获这种错误(大部分的MMU都可以做到，例如：禁止userspace访问kernel space的地址空间)，防止vector table被访问到。对于内核中由于程序错误导致的空指针访问，内存保护机制也需要控制vector table被修改，因此vector table所在的空间被设置成read only的。在使用了MMU之后，具体异常向量表放在那个物理地址已经不重要了，重要的是把它映射到0xffff0000的虚拟地址就OK了，具体代码如下：
+具体是low vectors还是high vectors是由ARM的一个叫做的SCTLR寄存器的第13个bit (vector bit)控制的。对于启用MMU的ARM Linux而言，系统使用了high vectors。为什么不用low vector呢?对于linux而言，0~3G的空间是用户空间，如果使用low vector，那么异常向量表在0地址，那么则是用户空间的位置，因此linux选用high vector。当然，使用Low vector也可以，这样Low vector所在的空间则属于kernel space了**(也就是说，3G~4G的空间加上Low vector所占的空间属于kernel space)**，不过这时候要注意一点，因为所有的进程共享kernel space，而用户空间的程序经常会发生空指针访问，这时候，内存保护机制应该可以捕获这种错误(大部分的MMU都可以做到，例如：禁止userspace访问kernel space的地址空间)，防止vector table被访问到。对于内核中由于程序错误导致的空指针访问，内存保护机制也需要控制vector table被修改，因此vector table所在的空间被设置成read only的。在使用了MMU之后，具体异常向量表放在那个物理地址已经不重要了，重要的是把它映射到0xffff0000的虚拟地址就OK了，具体代码如下：
 
 ```c
 static void __init devicemaps_init(const struct machine_desc *mdesc)
@@ -2098,7 +2113,7 @@ void __init early_trap_init(void *vectors_base)
     vectors_page = vectors_base;
     将整个vector table那个page frame填充成未定义的指令。起始vector table加上kuser helper函数并不能完全的充满这个page，有些缝隙。如果不这么处理，当极端情况下(程序错误或者HW的issue)，CPU可能从这些缝隙中取指执行，从而导致不可知的后果。如果将这些缝隙填充未定义指令，那么CPU可以捕获这种异常。
     for (i = 0; i < PAGE_SIZE / sizeof(u32); i++)
-    ((u32 *)vectors_base)[i] = 0xe7fddef1;
+    	((u32 *)vectors_base)[i] = 0xe7fddef1;
     拷贝vector table，拷贝stub function
     memcpy((void *)vectors, __vectors_start, __vectors_end - __vectors_start);
     memcpy((void *)vectors + 0x1000, __stubs_start, __stubs_end - __stubs_start);
@@ -2108,9 +2123,9 @@ void __init early_trap_init(void *vectors_base)
 }
 ```
 
-一旦涉及代码的拷贝，我们就需要关心其编译连接时地址(link-time address)和运行时地址(run-time address)。在kernel完成链接后，__vectors_start有了其link-time address，如果link-time address和run-time address一致，那么这段代码运行时毫无压力。但是，目前对于vector table而言，其被copy到其他的地址上(对于High vector，这是地址就是0xffff00000)，也就是说，link-time address和run-time address不一样了，如果仍然想要这些代码可以正确运行，那么需要这些代码是位置无关的代码。对于vector table而言，必须要位置无关。B这个branch instruction本身就是位置无关的，它可以跳转到一个当前位置的offset。不过并非所有的vector都是使用了branch instruction，对于软中断，其vector地址上指令是“W(ldr)    pc, __vectors_start + 0x1000 ”，这条指令被编译器编译成ldr     pc, [pc, #4080]，这种情况下，该指令也是位置无关的，但是有个限制，offset必须在4K的范围内，这也是为何存在stub section的原因了。
+一旦涉及代码的拷贝，我们就需要关心其编译连接时地址(link-time address)和运行时地址(run-time address)。在kernel完成链接后，vectors_start有了其link-time address，如果link-time address和run-time address一致，那么这段代码运行时毫无压力。但是，目前对于vector table而言，其被copy到其他的地址上(对于High vector，这是地址就是0xffff00000)，也就是说，link-time address和run-time address不一样了，如果仍然想要这些代码可以正确运行，那么需要这些代码是位置无关的代码。对于vector table而言，必须要位置无关。B这个branch instruction本身就是位置无关的，它可以跳转到一个当前位置的offset。不过并非所有的vector都是使用了branch instruction，对于软中断，其vector地址上指令是“W(ldr)    pc, vectors_start + 0x1000 ”，这条指令被编译器编译成ldr     pc, [pc, #4080]，这种情况下，该指令也是位置无关的，但是有个限制，offset必须在4K的范围内，这也是为何存在stub section的原因了。
 
-4、 中断控制器的初始化
+#### 4、 中断控制器的初始化
 
 具体可以参考GIC代码分析。
 
@@ -2120,7 +2135,7 @@ void __init early_trap_init(void *vectors_base)
 
 当外设(SOC内部或者外部都可以)检测到了中断事件，就会通过interrupt requestion line上的电平或者边沿(上升沿或者下降沿或者both)通知到该外设连接到的那个中断控制器，而中断控制器就会在多个处理器中选择一个，并把该中断通过IRQ(或者FIQ，本文不讨论FIQ的情况)分发给该processor。ARM处理器感知到了中断事件后，会进行下面一系列的动作：
 
-1、 修改CPSR(Current Program Status Register)寄存器中的M[4:0]。M[4:0]表示了ARM处理器当前处于的模式( processor modes)。ARM定义的mode包括：
+#### 1、 修改**CPSR(Current Program Status Register)寄存器**中的M[4:0]。M[4:0]表示了ARM处理器当前处于的模式( processor modes)。ARM定义的mode包括：
 
 
 | 处理器模式      | 缩写   | 对应的M[4:0]编码 | Privilege level |
@@ -2137,7 +2152,7 @@ void __init early_trap_init(void *vectors_base)
 
 一旦设定了CPSR.M，ARM处理器就会将processor mode切换到IRQ mode。
 
-2、 保存发生中断那一点的CPSR值(step 1之前的状态)和PC值
+#### 2、 保存发生中断那一点的CPSR值(step 1之前的状态)和PC值
 
 ARM处理器支持9种processor mode，每种mode看到的ARM core register(R0~R15，共计16个)都是不同的。每种mode都是从一个包括所有的Banked ARM core register中选取。全部Banked ARM core register包括：
 
@@ -2195,9 +2210,11 @@ PC也是共用的，由于后续PC会被修改为irq exception vector，因此�
 
 这时候的PC值其实是比发生中断时候的指令超前12。减去4之后，lr_irq中保存了(发生中断的指令+8)的地址。为什么HW不帮忙直接减去8呢?这样，后续软件不就不用再减去4了。这里我们不能孤立的看待问题，实际上ARM的异常处理的硬件逻辑不仅仅处理IRQ的exception，还要处理各种exception，很遗憾，不同的exception期望的返回地址不统一，因此，硬件只是帮忙减去4，剩下的交给软件去调整。
 
-3、 mask IRQ exception。也就是设定CPSR.I = 1
+#### 3、 mask IRQ exception。也就是设定CPSR.I = 1
 
-4、 设定PC值为IRQ exception vector。基本上，ARM处理器的硬件就只能帮你帮到这里了，一旦设定PC值，ARM处理器就会跳转到IRQ的exception vector地址了，后续的动作都是软件行为了。
+#### 4、 设定PC值为IRQ exception vector。
+
+基本上，ARM处理器的硬件就只能帮你帮到这里了，一旦设定PC值，ARM处理器就会跳转到IRQ的exception vector地址了，后续的动作都是软件行为了。
 
 ### 四、如何进入ARM中断处理
 
@@ -2346,7 +2363,7 @@ F：内核栈上还有两个寄存器没有保持，分别是发生中断时候s
 
 irq_handler的处理有两种配置。一种是配置了CONFIG_MULTI_IRQ_HANDLER。这种情况下，linux kernel允许run time设定irq handler。如果我们需要一个linux kernel image支持多个平台，这是就需要配置这个选项。另外一种是传统的linux的做法，irq_handler实际上就是arch_irq_handler_default，具体代码如下：
 
-```addembly
+```assembly
 .macro    irq_handler
 #ifdef CONFIG_MULTI_IRQ_HANDLER
 ldr    r1, =handle_arch_irq
@@ -2382,11 +2399,11 @@ bne    asm_do_IRQ
 
 对于ARM平台而言，我们推荐使用第一种方法，因为从逻辑上讲，中断处理就是需要根据当前的硬件中断系统的状态，转换成一个IRQ number，然后调用该IRQ number的处理函数即可。通过get_irqnr_and_base这样的宏定义来获取IRQ是旧的ARM SOC系统使用的方法，它是假设SOC上有一个中断控制器，硬件状态和IRQ number之间的关系非常简单。但是实际上，ARM平台上的硬件中断系统已经是越来越复杂了，需要引入interrupt controller级联，irq domain等等概念，因此，使用第一种方法优点更多。
 
-3、当发生中断的时候，代码运行在内核空间
+#### 3、当发生中断的时候，代码运行在内核空间
 
 如果中断发生在内核空间，代码会跳转到__irq_svc处执行：
 
-```c
+```assembly
 .align    5
 __irq_svc:
 svc_entry－－－－保存发生中断那一刻的现场保存在内核栈上
@@ -2408,8 +2425,6 @@ struct thread_info {
     ……
 };
 ```
-
-
 
 flag成员用来标记一些low level的flag，而preempt_count用来判断当前是否可以发生抢占，如果preempt_count不等于0(可能是代码调用preempt_disable显式的禁止了抢占，也可能是处于中断上下文等)，说明当前不能进行抢占，直接进入恢复现场的工作。如果preempt_count等于0，说明已经具备了抢占的条件，当然具体是否要抢占当前进程还是要看看thread info中的flag成员是否设定了_TIF_NEED_RESCHED这个标记(可能是当前的进程的时间片用完了，也可能是由于中断唤醒了优先级更高的进程)。
 
@@ -2445,7 +2460,7 @@ OK，我们再回到中断这个主题，其实在中断处理过程中，没有
 
 无论是在内核态(包括系统调用和中断上下文)还是用户态，发生了中断后都会调用irq_handler进行处理，这里会调用对应的irq number的handler，处理softirq、tasklet、workqueue等(这些内容另开一个文档描述)，但无论如何，最终都是要返回发生中断的现场。
 
-1、中断发生在user mode下的退出过程，代码如下：
+#### 1、中断发生在user mode下的退出过程，代码如下：
 
 ```assembly
 ENTRY(ret_to_user_from_irq)
@@ -2489,7 +2504,7 @@ movs    pc, lr               －－－－－－－－返回用户空间
 .endm
 ```
 
-2、中断发生在svc mode下的退出过程。具体代码如下：
+#### 2、中断发生在svc mode下的退出过程。具体代码如下：
 
 ```assembly
 .macro    svc_exit, rpsr, irq = 0
@@ -2509,9 +2524,9 @@ ldmia    sp, {r0 - pc}^ －－－－－这条指令是ldm异常返回指令，�
 
 ## (七)：GIC代码分析
 
-一、前言
+### 一、前言
 
-GIC(Generic Interrupt Controller)是ARM公司提供的一个通用的中断控制器，其architecture specification目前有四个版本，V1~V4(V2最多支持8个ARM core，V3/V4支持更多的ARM core，主要用于ARM64服务器系统结构)。目前在ARM官方网站只能下载到Version 2的GIC architecture specification，因此，本文主要描述符合V2规范的GIC硬件及其驱动。
+**GIC(Generic Interrupt Controller)**是ARM公司提供的一个通用的中断控制器，其architecture specification目前有四个版本，V1~V4(V2最多支持8个ARM core，V3/V4支持更多的ARM core，主要用于ARM64服务器系统结构)。目前在ARM官方网站只能下载到Version 2的GIC architecture specification，因此，本文主要描述符合V2规范的GIC硬件及其驱动。
 
 具体GIC硬件的实现形态有两种，一种是在ARM vensor研发自己的SOC的时候，会向ARM公司购买GIC的IP，这些IP包括的型号有：PL390，GIC-400，GIC-500。其中GIC-500最多支持128个 cpu core，它要求ARM core必须是ARMV8指令集的(例如Cortex-A57)，符合GIC architecture specification version 3。另外一种形态是ARM vensor直接购买ARM公司的Cortex A9或者A15的IP，Cortex A9或者A15中会包括了GIC的实现，当然，这些实现也是符合GIC V2的规格。
 
@@ -2521,17 +2536,17 @@ GIC(Generic Interrupt Controller)是ARM公司提供的一个通用的中断控�
 
 注：具体的linux kernel的版本是linux-3.17-rc3。
 
-二、GIC-V2的硬件描述
+### 二、GIC-V2的硬件描述
 
-1、GIC-V2的输入和输出信号
+#### 1、GIC-V2的输入和输出信号
 
-(1)GIC-V2的输入和输出信号示意图
+##### (1)GIC-V2的输入和输出信号示意图
 
 要想理解一个building block(无论软件还是硬件)，我们都可以先把它当成黑盒子，只是研究其input，output。GIC-V2的输入和输出信号的示意图如下(注：我们以GIC-400为例，同时省略了clock，config等信号)：
 
 ![](attachment\7.1.gif)
 
-(2)输入信号
+##### (2)输入信号
 
 上图中左边就是来自外设的interrupt source输入信号。分成两种类型，分别是PPI(Private Peripheral Interrupt)和SPI(Shared Peripheral Interrupt)。其实从名字就可以看出来两种类型中断信号的特点，PPI中断信号是CPU私有的，每个CPU都有其特定的PPI信号线。而SPI是所有CPU之间共享的。通过寄存器GICD_TYPER可以配置SPI的个数(最多480个)。GIC-400支持多少个SPI中断，其输入信号线就有多少个SPI interrupt request signal。同样的，通过寄存器GICD_TYPER也可以配置CPU interface的个数(最多8个)，GIC-400支持多少个CPU interface，其输入信号线就提供多少组PPI中断信号线。一组PPI中断信号线包括6个实际的signal：
 
@@ -2561,7 +2576,7 @@ GIC(Generic Interrupt Controller)是ARM公司提供的一个通用的中断控�
 
 关于一系列和虚拟化相关的中断，请参考虚拟化的系列文档。
 
-(3)输出信号
+##### (3)输出信号
 
 所谓输出信号，其实就是GIC和各个CPU直接的接口，这些接口包括：
 
@@ -2571,7 +2586,7 @@ GIC(Generic Interrupt Controller)是ARM公司提供的一个通用的中断控�
 
 (c)AXI slave interface signals。AXI(Advanced eXtensible Interface)是一种总线协议，属于AMBA规范的一部分。通过这些信号线，ARM CPU可以和GIC硬件block进行通信(例如寄存器访问)。
 
-(4)中断号的分配
+##### (4)中断号的分配
 
 GIC-V2支持的中断类型有下面几种：
 
@@ -2587,9 +2602,9 @@ GIC-V2支持的中断类型有下面几种：
 
 (b)ID32~ID1019用于SPI。 这是GIC规范的最大size，实际上GIC-400最大支持480个SPI，Cortex-A15和A9上的GIC最多支持224个SPI。
 
-2、GIC-V2的内部逻辑
+#### 2、GIC-V2的内部逻辑
 
-(1)GIC的block diagram
+##### (1)GIC的block diagram
 
 GIC的block diagram如下图所示：
 
@@ -2597,23 +2612,23 @@ GIC的block diagram如下图所示：
 
 GIC可以清晰的划分成两个block，一个block是Distributor(上图的左边的block)，一个是CPU interface。CPU interface有两种，一种就是和普通processor接口，另外一种是和虚拟机接口的。Virtual CPU interface在本文中不会详细描述。
 
-(2)Distributor 概述
+##### (2)Distributor 概述
 
 Distributor的主要的作用是检测各个interrupt source的状态，控制各个interrupt source的行为，分发各个interrupt source产生的中断事件分发到指定的一个或者多个CPU interface上。虽然Distributor可以管理多个interrupt source，但是它总是把优先级最高的那个interrupt请求送往CPU interface。Distributor对中断的控制包括：
 
-(1)中断enable或者disable的控制。Distributor对中断的控制分成两个级别。一个是全局中断的控制(GIC_DIST_CTRL)。一旦disable了全局的中断，那么任何的interrupt source产生的interrupt event都不会被传递到CPU interface。另外一个级别是对针对各个interrupt source进行控制(GIC_DIST_ENABLE_CLEAR)，disable某一个interrupt source会导致该interrupt event不会分发到CPU interface，但不影响其他interrupt source产生interrupt event的分发。
+(a)中断enable或者disable的控制。Distributor对中断的控制分成两个级别。一个是全局中断的控制(GIC_DIST_CTRL)。一旦disable了全局的中断，那么任何的interrupt source产生的interrupt event都不会被传递到CPU interface。另外一个级别是对针对各个interrupt source进行控制(GIC_DIST_ENABLE_CLEAR)，disable某一个interrupt source会导致该interrupt event不会分发到CPU interface，但不影响其他interrupt source产生interrupt event的分发。
 
-(2)控制将当前优先级最高的中断事件分发到一个或者一组CPU interface。当一个中断事件分发到多个CPU interface的时候，GIC的内部逻辑应该保证只assert 一个CPU。
+(b)控制将当前优先级最高的中断事件分发到一个或者一组CPU interface。当一个中断事件分发到多个CPU interface的时候，GIC的内部逻辑应该保证只assert 一个CPU。
 
-(3)优先级控制。
+(c)优先级控制。
 
-(4)interrupt属性设定。例如是level-sensitive还是edge-triggered
+(d)interrupt属性设定。例如是level-sensitive还是edge-triggered
 
-(5)interrupt group的设定
+(e)interrupt group的设定
 
 Distributor可以管理若干个interrupt source，这些interrupt source用ID来标识，我们称之interrupt ID。
 
-(3)CPU interface
+##### (3)CPU interface
 
 CPU interface这个block主要用于和process进行接口。该block的主要功能包括：
 
@@ -2629,7 +2644,7 @@ CPU interface这个block主要用于和process进行接口。该block的主要�
 
 (f)在多个中断事件同时到来的时候，选择一个优先级最高的通知processor
 
-(4)实例
+##### (4)实例
 
 我们用一个实际的例子来描述GIC和CPU接口上的交互过程，具体过程如下：
 
@@ -2669,14 +2684,13 @@ CPU interface这个block主要用于和process进行接口。该block的主要�
 
 
 
-
-三、GIC-V2 irq chip driver的初始化过程
+### 三、GIC-V2 irq chip driver的初始化过程
 
 在linux-3.17-rc3\drivers\irqchip目录下保存在各种不同的中断控制器的驱动代码，这个版本的内核支持了GICV3。irq-gic-common.c是通用的GIC的驱动代码，可以被各个版本的GIC使用。irq-gic.c是用于V2版本的GIC controller，而irq-gic-v3.c是用于V3版本的GIC controller。
 
-1、GIC的device node和GIC irq chip driver的匹配过程
+#### 1、GIC的device node和GIC irq chip driver的匹配过程
 
-(1)irq chip driver中的声明
+##### (1)irq chip driver中的声明
 
 在linux-3.17-rc3\drivers\irqchip目录下的irqchip.h文件中定义了IRQCHIP_DECLARE宏如下：
 
@@ -2698,37 +2712,30 @@ __used __section(__##table##_of_table)            \
 
 这个宏其实就是初始化了一个struct of_device_id的静态常量，并放置在__irqchip_of_table section中。irq-gic.c文件中使用IRQCHIP_DECLARE来定义了若干个静态的struct of_device_id常量，如下：
 
+```c
 IRQCHIP_DECLARE(gic_400, "arm,gic-400", gic_of_init);
-
 IRQCHIP_DECLARE(cortex_a15_gic, "arm,cortex-a15-gic", gic_of_init);
-
 IRQCHIP_DECLARE(cortex_a9_gic, "arm,cortex-a9-gic", gic_of_init);
-
 IRQCHIP_DECLARE(cortex_a7_gic, "arm,cortex-a7-gic", gic_of_init);
-
-IRQCHIP_DECLARE(msm_8660_qgic, "qcom,msm-8660-qgic", gic_of_init);
-
+IRQCHIP_DECLARE(msm8660qgic, "qcom,msm-8660-qgic", gic_of_init);
 IRQCHIP_DECLARE(msm_qgic2, "qcom,msm-qgic2", gic_of_init);
+```
 
 兼容GIC-V2的GIC实现有很多，不过其初始化函数都是一个。在linux kernel编译的时候，你可以配置多个irq chip进入内核，编译系统会把所有的IRQCHIP_DECLARE宏定义的数据放入到一个特殊的section中(section name是__irqchip_of_table)，我们称这个特殊的section叫做irq chip table。这个table也就保存了kernel支持的所有的中断控制器的ID信息(最重要的是驱动代码初始化函数和DT compatible string)。我们来看看struct of_device_id的定义：
 
+```c
 struct of_device_id
-
 {
-
-char    name[32];－－－－－－要匹配的device node的名字
-
-char    type[32];－－－－－－－要匹配的device node的类型
-
-char    compatible[128];－－－匹配字符串(DT compatible string)，用来匹配适合的device node
-
-const void *data;－－－－－－－－对于GIC，这里是初始化函数指针
-
+    char    name[32];－－－－－－要匹配的device node的名字
+    char    type[32];－－－－－－－要匹配的device node的类型
+    char    compatible[128];－－－匹配字符串(DT compatible string)，用来匹配适合的device node
+    const void *data;－－－－－－－－对于GIC，这里是初始化函数指针
 };
+```
 
 这个数据结构主要被用来进行Device node和driver模块进行匹配用的。从该数据结构的定义可以看出，在匹配过程中，device name、device type和DT compatible string都是考虑的因素。更细节的内容请参考__of_device_is_compatible函数。
 
-(2)device node
+##### (2)device node
 
 不同的GIC-V2的实现总会有一些不同，这些信息可以通过Device tree的机制来传递。Device node中定义了各种属性，其中就包括了memory资源，IRQ描述等信息，这些信息需要在初始化的时候传递给具体的驱动，因此需要一个Device node和driver模块的匹配过程。在Device Tree模块中会包括系统中所有的device node，如果我们的系统使用了GIC-400，那么系统的device node数据库中会有一个node是GIC-400的，一个示例性的GIC-400的device node(我们以瑞芯微的RK3288处理器为例)定义如下：
 
@@ -2754,7 +2761,7 @@ interrupts = ;
 
 };
 
-(3)device node和irq chip driver的匹配
+##### (3)device node和irq chip driver的匹配
 
 在machine driver初始化的时候会调用irqchip_init函数进行irq chip driver的初始化。在driver/irqchip/irqchip.c文件中定义了irqchip_init函数，如下：
 
@@ -2768,49 +2775,32 @@ of_irq_init(__irqchip_begin);
 
 __irqchip_begin就是内核irq chip table的首地址，这个table也就保存了kernel支持的所有的中断控制器的ID信息(用于和device node的匹配)。of_irq_init函数执行之前，系统已经完成了device tree的初始化，因此系统中的所有的设备节点都已经形成了一个树状结构，每个节点代表一个设备的device node。of_irq_init是在所有的device node中寻找中断控制器节点，形成树状结构(系统可以有多个interrupt controller，之所以形成中断控制器的树状结构，是为了让系统中所有的中断控制器驱动按照一定的顺序进行初始化)。之后，从root interrupt controller节点开始，对于每一个interrupt controller的device node，扫描irq chip table，进行匹配，一旦匹配到，就调用该interrupt controller的初始化函数，并把该中断控制器的device node以及parent中断控制器的device node作为参数传递给irq chip driver。。具体的匹配过程的代码属于Device Tree模块的内容，更详细的信息可以参考Device Tree代码分析文档。
 
-2、GIC driver初始化代码分析
+#### 2、GIC driver初始化代码分析
 
-(1)gic_of_init的代码如下：
+##### (1) gic_of_init的代码如下：
 
+```c
 int __init gic_of_init(struct device_node *node, struct device_node *parent)
-
 {
-
-void __iomem *cpu_base;
-
-void __iomem *dist_base;
-
-u32 percpu_offset;
-
-int irq;
-
-dist_base = of_iomap(node, 0);----------------映射GIC Distributor的寄存器地址空间
-
-cpu_base = of_iomap(node, 1);----------------映射GIC CPU interface的寄存器地址空间
-
-if (of_property_read_u32(node, "cpu-offset", &percpu_offset))--------处理cpu-offset属性。
-
-percpu_offset = 0;
-
-gic_init_bases(gic_cnt, -1, dist_base, cpu_base, percpu_offset, node);))-----主处理过程，后面详述
-
-if (!gic_cnt)
-
-gic_init_physaddr(node); -----对于不支持big.LITTLE switcher(CONFIG_BL_SWITCHER)的系统，该函数为空。
-
-if (parent) {--------处理interrupt级联
-
-irq = irq_of_parse_and_map(node, 0); －－－解析second GIC的interrupts属性，并进行mapping，返回IRQ number
-
-gic_cascade_irq(gic_cnt, irq);
-
+    void __iomem *cpu_base;
+    void __iomem *dist_base;
+    u32 percpu_offset;
+    int irq;
+    dist_base = of_iomap(node, 0);----------------映射GIC Distributor的寄存器地址空间
+    cpu_base = of_iomap(node, 1);----------------映射GIC CPU interface的寄存器地址空间
+    if (of_property_read_u32(node, "cpu-offset", &percpu_offset))--------处理cpu-offset属性。
+        percpu_offset = 0;
+    gic_init_bases(gic_cnt, -1, dist_base, cpu_base, percpu_offset, node);))-----主处理过程，后面详述
+    if (!gic_cnt)
+    	gic_init_physaddr(node); -----对于不支持big.LITTLE switcher(CONFIG_BL_SWITCHER)的系统，该函数为空。
+    if (parent) {--------处理interrupt级联
+        irq = irq_of_parse_and_map(node, 0); －－－解析second GIC的interrupts属性，并进行mapping，返回IRQ number
+        gic_cascade_irq(gic_cnt, irq);
+    }
+    gic_cnt++;
+    return 0;
 }
-
-gic_cnt++;
-
-return 0;
-
-}
+```
 
 我们首先看看这个函数的参数，node参数代表需要初始化的那个interrupt controller的device node，parent参数指向其parent。在映射GIC-400的memory map I/O space的时候，我们只是映射了Distributor和CPU interface的寄存器地址空间，和虚拟化处理相关的寄存器没有映射，因此这个版本的GIC driver应该是不支持虚拟化的(不知道后续版本是否支持，在一个嵌入式平台上支持虚拟化有实际意义吗?最先支持虚拟化的应该是ARM64+GICV3/4这样的平台)。
 
@@ -2818,113 +2808,65 @@ return 0;
 
 interrupt controller可以级联。对于root GIC，其传入的parent是NULL，因此不会执行级联部分的代码。对于second GIC，它是作为其parent(root GIC)的一个普通的irq source，因此，也需要注册该IRQ的handler。由此可见，非root的GIC的初始化分成了两个部分：一部分是作为一个interrupt controller，执行和root GIC一样的初始化代码。另外一方面，GIC又作为一个普通的interrupt generating device，需要象一个普通的设备驱动一样，注册其中断handler。理解irq_of_parse_and_map需要irq domain的知识，请参考linux kernel的中断子系统之(二)：irq domain介绍。
 
-(2)gic_init_bases的代码如下：
+##### (2)gic_init_bases的代码如下：
 
+```c
 void __init gic_init_bases(unsigned int gic_nr, int irq_start,
-
-void __iomem *dist_base, void __iomem *cpu_base,
-
+void iomem *dist_base, void iomem *cpu_base,
 u32 percpu_offset, struct device_node *node)
-
 {
-
-irq_hw_number_t hwirq_base;
-
-struct gic_chip_data *gic;
-
-int gic_irqs, irq_base, i;
-
-gic = &gic_data[gic_nr];
-
-gic->dist_base.common_base = dist_base; －－－－省略了non banked的情况
-
-gic->cpu_base.common_base = cpu_base;
-
-gic_set_base_accessor(gic, gic_get_common_base);
-
-for (i = 0; i < NR_GIC_CPU_IF; i++) －－－后面会具体描述gic_cpu_map的含义
-
-gic_cpu_map[i] = 0xff;
-
-if (gic_nr == 0 && (irq_start & 31) > 0) { －－－－－－－－－－－－－－－－－－－－(a)
-
-hwirq_base = 16;
-
-if (irq_start != -1)
-
-irq_start = (irq_start & ~31) + 16;
-
-} else {
-
-hwirq_base = 32;
-
+    irq_hw_number_t hwirq_base;
+    struct gic_chip_data *gic;
+    int gic_irqs, irq_base, i;
+    gic = &gic_data[gic_nr];
+    gic->dist_base.common_base = dist_base; －－－－省略了non banked的情况
+    gic->cpu_base.common_base = cpu_base;
+    gic_set_base_accessor(gic, gic_get_common_base);
+    for (i = 0; i < NR_GIC_CPU_IF; i++) －－－后面会具体描述gic_cpu_map的含义
+    	gic_cpu_map[i] = 0xff;
+    if (gic_nr == 0 && (irq_start & 31) > 0) { －－－－－－－－－－－－－－－－－－－－(a)
+        hwirq_base = 16;
+        if (irq_start != -1)
+        	irq_start = (irq_start & ~31) + 16;
+        } else {
+        	hwirq_base = 32;
+    	}
+    gic_irqs = readl_relaxed(gic_data_dist_base(gic) + GIC_DIST_CTR) & 0x1f; －－－－(b)
+    gic_irqs = (gic_irqs + 1) * 32;
+    if (gic_irqs > 1020)
+    	gic_irqs = 1020;
+    gic->gic_irqs = gic_irqs;
+    gic_irqs -= hwirq_base;－－－－－－－－－－－－－－－－－－－－－－－－－－－－(c)
+    if (of_property_read_u32(node, "arm,routable-irqs",－－－－－－－－－－－－－－－－(d)
+    	&nr_routable_irqs)) {
+    irq_base = irq_alloc_descs(irq_start, 16, gic_irqs,  numa_node_id()); －－－－－－－(e)
+    if (IS_ERR_VALUE(irq_base)) {
+    WARN(1, "Cannot allocate irq_descs @ IRQ%d, assuming pre-allocated\n",
+    irq_start);
+    irq_base = irq_start;
+    }
+    gic->domain = irq_domain_add_legacy(node, gic_irqs, irq_base, －－－－－－－(f)
+    hwirq_base, &gic_irq_domain_ops, gic);
+    } else {
+    gic->domain = irq_domain_add_linear(node, nr_routable_irqs, －－－－－－－－(f)
+    &gic_irq_domain_ops,
+    gic);
+    }
+    if (gic_nr == 0) { －－－只对root GIC操作，因为设定callback、注册Notifier只需要一次就OK了
+    ifdef CONFIG_SMP
+    set_smp_cross_call(gic_raise_softirq);－－－－－－－－－－－－－－－－－－(g)
+    register_cpu_notifier(&gic_cpu_notifier);－－－－－－－－－－－－－－－－－－(h)
+    endif
+    set_handle_irq(gic_handle_irq); －－－这个函数名字也不好，实际上是设定arch相关的irq handler
+    }
+    gic_chip.flags |= gic_arch_extn.flags;
+    gic_dist_init(gic);---------具体的硬件初始代码，参考下节的描述
+    gic_cpu_init(gic);
+    gic_pm_init(gic);
 }
+```
 
-gic_irqs = readl_relaxed(gic_data_dist_base(gic) + GIC_DIST_CTR) & 0x1f; －－－－(b)
 
-gic_irqs = (gic_irqs + 1) * 32;
-
-if (gic_irqs > 1020)
-
-gic_irqs = 1020;
-
-gic->gic_irqs = gic_irqs;
-
-gic_irqs -= hwirq_base;－－－－－－－－－－－－－－－－－－－－－－－－－－－－(c)
-
-if (of_property_read_u32(node, "arm,routable-irqs",－－－－－－－－－－－－－－－－(d)
-
-&nr_routable_irqs)) {
-
-irq_base = irq_alloc_descs(irq_start, 16, gic_irqs,  numa_node_id()); －－－－－－－(e)
-
-if (IS_ERR_VALUE(irq_base)) {
-
-WARN(1, "Cannot allocate irq_descs @ IRQ%d, assuming pre-allocated\n",
-
-irq_start);
-
-irq_base = irq_start;
-
-}
-
-gic->domain = irq_domain_add_legacy(node, gic_irqs, irq_base, －－－－－－－(f)
-
-hwirq_base, &gic_irq_domain_ops, gic);
-
-} else {
-
-gic->domain = irq_domain_add_linear(node, nr_routable_irqs, －－－－－－－－(f)
-
-&gic_irq_domain_ops,
-
-gic);
-
-}
-
-if (gic_nr == 0) { －－－只对root GIC操作，因为设定callback、注册Notifier只需要一次就OK了
-
-#ifdef CONFIG_SMP
-
-set_smp_cross_call(gic_raise_softirq);－－－－－－－－－－－－－－－－－－(g)
-
-register_cpu_notifier(&gic_cpu_notifier);－－－－－－－－－－－－－－－－－－(h)
-
-#endif
-
-set_handle_irq(gic_handle_irq); －－－这个函数名字也不好，实际上是设定arch相关的irq handler
-
-}
-
-gic_chip.flags |= gic_arch_extn.flags;
-
-gic_dist_init(gic);---------具体的硬件初始代码，参考下节的描述
-
-gic_cpu_init(gic);
-
-gic_pm_init(gic);
-
-}
 
 (a)gic_nr标识GIC number，等于0就是root GIC。hwirq的意思就是GIC上的HW interrupt ID，并不是GIC上的每个interrupt ID都有map到linux IRQ framework中的一个IRQ number，对于SGI，是属于软件中断，用于CPU之间通信，没有必要进行HW interrupt ID到IRQ number的mapping。变量hwirq_base表示该GIC上要进行map的base ID，hwirq_base = 16也就意味着忽略掉16个SGI。对于系统中其他的GIC，其PPI也没有必要mapping，因此hwirq_base = 32。
 
@@ -3955,19 +3897,15 @@ local_bh_enable
 
 在上一节已经描述一个softirq被调度执行的场景，本节主要关注在中断返回现场时候调度softirq的场景。我们来看中断退出的代码，具体如下：
 
+```c
 void irq_exit(void)
-
 {
-
 ……
-
 if (!in_interrupt() && local_softirq_pending())
-
 invoke_softirq();
-
 ……
-
 }
+```
 
 代码中“!in_interrupt()”这个条件可以确保下面的场景不会触发sotfirq的调度：
 
@@ -3977,91 +3915,56 @@ invoke_softirq();
 
 我们继续看invoke_softirq的代码：
 
+```c
 static inline void invoke_softirq(void)
-
 {
-
 if (!force_irqthreads) {
-
 #ifdef CONFIG_HAVE_IRQ_EXIT_ON_IRQ_STACK
-
 __do_softirq();
-
 #else
-
 do_softirq_own_stack();
-
 #endif
-
 } else {
-
 wakeup_softirqd();
-
 }
-
 }
+```
 
 force_irqthreads是和强制线程化相关的，主要用于interrupt handler的调试(一般而言，在线程环境下比在中断上下文中更容易收集调试数据)。如果系统选择了对所有的interrupt handler进行线程化处理，那么softirq也没有理由在中断上下文中处理(中断handler都在线程中执行了，softirq怎么可能在中断上下文中执行)。本身invoke_softirq这个函数是在中断上下文中被调用的，如果强制线程化，那么系统中所有的软中断都在sofirq的daemon进程中被调度执行。
 
 如果没有强制线程化，softirq的处理也分成两种情况，主要是和softirq执行的时候使用的stack相关。如果arch支持单独的IRQ STACK，这时候，由于要退出中断，因此irq stack已经接近全空了(不考虑中断栈嵌套的情况，因此新内核下，中断不会嵌套)，因此直接调用__do_softirq()处理软中断就OK了，否则就调用do_softirq_own_stack函数在softirq自己的stack上执行。当然对ARM而言，softirq的处理就是在当前的内核栈上执行的，因此do_softirq_own_stack的调用就是调用__do_softirq()，代码如下(删除了部分无关代码)：
 
+```c
 asmlinkage void __do_softirq(void)
-
 {
-
 ……
-
 pending = local_softirq_pending();－－－－－－－－－－－－－－－获取softirq pending的状态
-
 __local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);－－－标识下面的代码是正在处理softirq
-
 cpu = smp_processor_id();
-
 restart:
-
 set_softirq_pending(0); －－－－－－－－－清除pending标志
-
 local_irq_enable(); －－－－－－打开中断，softirq handler是开中断执行的
-
 h = softirq_vec; －－－－－－－获取软中断描述符指针
-
 while ((softirq_bit = ffs(pending))) {－－－－－－－寻找pending中第一个被设定为1的bit
-
 unsigned int vec_nr;
-
 int prev_count;
-
 h += softirq_bit - 1; －－－－－－指向pending的那个软中断描述符
-
 vec_nr = h - softirq_vec;－－－－获取soft irq number
-
 h->action(h);－－－－－－－－－指向softirq handler
-
 h++;
-
 pending >>= softirq_bit;
-
 }
-
 local_irq_disable(); －－－－－－－关闭本地中断
-
 pending = local_softirq_pending();－－－－－－－－－－(注1)
-
 if (pending) {
-
 if (time_before(jiffies, end) && !need_resched() &&
-
 --max_restart)
-
 goto restart;
-
 wakeup_softirqd();
-
 }
-
 __local_bh_enable(SOFTIRQ_OFFSET);－－－－－－－－－－标识softirq处理完毕
-
 }
+```
 
 (注1)再次检查softirq pending，有可能上面的softirq handler在执行过程中，发生了中断，又raise了softirq。如果的确如此，那么我们需要跳转到restart那里重新处理soft irq。当然，也不能总是在这里不断的loop，因此linux kernel设定了下面的条件：
 
@@ -4078,129 +3981,117 @@ __local_bh_enable(SOFTIRQ_OFFSET);－－－－－－－－－－标识softirq处
 
 ## (九)：tasklet
 
-一、前言
+### 一、前言
 
-对于中断处理而言，linux将其分成了两个部分，一个叫做中断handler(top half)，属于不那么紧急需要处理的事情被推迟执行，我们称之deferable task，或者叫做bottom half，。具体如何推迟执行分成下面几种情况：
+对于中断处理而言，linux将其分成了两个部分，一个叫做中断handler(top half)，属于不那么紧急需要处理的事情被推迟执行，我们称之deferable task，或者叫做bottom half。具体如何推迟执行分成下面几种情况：
 
-1、推迟到top half执行完毕
+1、推迟到top half执行完毕；
 
-2、推迟到某个指定的时间片(例如40ms)之后执行
+2、推迟到某个指定的时间片(例如40ms)之后执行；
 
-3、推迟到某个内核线程被调度的时候执行
+3、推迟到某个内核线程被调度的时候执行；
 
 对于第一种情况，内核中的机制包括softirq机制和tasklet机制。第二种情况是属于softirq机制的一种应用场景(timer类型的softirq)，在本站的时间子系统的系列文档中会描述。第三种情况主要包括threaded irq handler以及通用的workqueue机制，当然也包括自己创建该驱动专属kernel thread(不推荐使用)。本文主要描述tasklet这种机制，第二章描述一些背景知识和和tasklet的思考，第三章结合代码描述tasklet的原理。
 
 注：本文中的linux kernel的版本是4.0
 
-二、为什么需要tasklet?
+### 二、为什么需要tasklet?
 
-1、基本的思考
+#### 1、基本的思考
 
 我们的驱动程序或者内核模块真的需要tasklet吗?每个人都有自己的看法。我们先抛开linux kernel中的机制，首先进行一番逻辑思考。
 
 将中断处理分成top half(cpu和外设之间的交互，获取状态，ack状态，收发数据等)和bottom half(后段的数据处理)已经深入人心，对于任何的OS都一样，将不那么紧急的事情推迟到bottom half中执行是OK的，具体如何推迟执行分成两种类型：有具体时间要求的(对应linux kernel中的低精度timer和高精度timer)和没有具体时间要求的。对于没有具体时间要求的又可以分成两种：
 
-(1)越快越好型，这种实际上是有性能要求的，除了中断top half可以抢占其执行，其他的进程上下文(无论该进程的优先级多么的高)是不会影响其执行的，一言以蔽之，在不影响中断延迟的情况下，OS会尽快处理。
+(1) 越快越好型，这种实际上是有性能要求的，除了中断top half可以抢占其执行，其他的进程上下文(无论该进程的优先级多么的高)是不会影响其执行的，一言以蔽之，在不影响中断延迟的情况下，OS会尽快处理。
 
-(2)随遇而安型。这种属于那种没有性能需求的，其调度执行依赖系统的调度器。
+(2) 随遇而安型。这种属于那种没有性能需求的，其调度执行依赖系统的调度器。
 
 本质上讲，越快越好型的bottom half不应该太多，而且tasklet的callback函数不能执行时间过长，否则会产生进程调度延迟过大的现象，甚至是非常长而且不确定的延迟，对real time的系统会产生很坏的影响。
 
-2、对linux中的bottom half机制的思考
+#### 2、对linux中的bottom half机制的思考
 
 在linux kernel中，“越快越好型”有两种，softirq和tasklet，“随遇而安型”也有两种，workqueue和threaded irq handler。“越快越好型”能否只留下一个softirq呢?对于崇尚简单就是美的程序员当然希望如此。为了回答这个问题，我们先看看tasklet对于softirq而言有哪些好处：
 
-(1)tasklet可以动态分配，也可以静态分配，数量不限。
+(1) tasklet可以动态分配，也可以静态分配，数量不限。
 
-(2)同一种tasklet在多个cpu上也不会并行执行，这使得程序员在撰写tasklet function的时候比较方便，减少了对并发的考虑(当然损失了性能)。
+(2) 同一种tasklet在多个cpu上也不会并行执行，这使得程序员在撰写tasklet function的时候比较方便，减少了对并发的考虑(当然损失了性能)。
 
 对于第一种好处，其实也就是为乱用tasklet打开了方便之门，很多撰写驱动的软件工程师不会仔细考量其driver是否有性能需求就直接使用了tasklet机制。对于第二种好处，本身考虑并发就是软件工程师的职责。因此，看起来tasklet并没有引入特别的好处，而且和softirq一样，都不能sleep，限制了handler撰写的方便性，看起来其实并没有存在的必要。在4.0 kernel的代码中，grep一下tasklet的使用，实际上是一个很长的列表，只要对这些使用进行简单的归类就可以删除对tasklet的使用。对于那些有性能需求的，可以考虑并入softirq，其他的可以考虑使用workqueue来取代。Steven Rostedt试图进行这方面的尝试(http://lwn.net/Articles/239484/)，不过这个patch始终未能进入main line。
 
-三、tasklet的基本原理
+### 三、tasklet的基本原理
 
-1、如何抽象一个tasklet
+#### 1、如何抽象一个tasklet
 
 内核中用下面的数据结构来表示tasklet：
 
+```c
 struct tasklet_struct
-
 {
-
-struct tasklet_struct *next;
-
-unsigned long state;
-
-atomic_t count;
-
-void (*func)(unsigned long);
-
-unsigned long data;
-
+    struct tasklet_struct *next;
+    unsigned long state;
+    atomic_t count;
+    void (*func)(unsigned long);
+    unsigned long data;
 };
+```
 
 每个cpu都会维护一个链表，将本cpu需要处理的tasklet管理起来，next这个成员指向了该链表中的下一个tasklet。func和data成员描述了该tasklet的callback函数，func是调用函数，data是传递给func的参数。state成员表示该tasklet的状态，TASKLET_STATE_SCHED表示该tasklet以及被调度到某个CPU上执行，TASKLET_STATE_RUN表示该tasklet正在某个cpu上执行。count成员是和enable或者disable该tasklet的状态相关，如果count等于0那么该tasklet是处于enable的，如果大于0，表示该tasklet是disable的。在softirq文档中，我们知道local_bh_disable/enable函数就是用来disable/enable bottom half的，这里就包括softirq和tasklet。但是，有的时候内核同步的场景不需disable所有的softirq和tasklet，而仅仅是disable该tasklet，这时候，tasklet_disable和tasklet_enable就派上用场了。
 
+```c
 static inline void tasklet_disable(struct tasklet_struct *t)
-
 {
-
-tasklet_disable_nosync(t);－－－－－－－给tasklet的count加一
-
-tasklet_unlock_wait(t);－－－－－如果该tasklet处于running状态，那么需要等到该tasklet执行完毕
-
-smp_mb();
-
+    tasklet_disable_nosync(t);－－－－－－－给tasklet的count加一
+    tasklet_unlock_wait(t);－－－－－如果该tasklet处于running状态，那么需要等到该tasklet执行完毕
+    smp_mb();
 }
 
 static inline void tasklet_enable(struct tasklet_struct *t)
-
 {
-
-smp_mb__before_atomic();
-
-atomic_dec(&t->count);－－－－－－－给tasklet的count减一
-
+    smp_mb__before_atomic();
+    atomic_dec(&t->count);－－－－－－－给tasklet的count减一
 }
+```
+
+
 
 tasklet_disable和tasklet_enable支持嵌套，但是需要成对使用。
 
-2、系统如何管理tasklet?
+#### 2、系统如何管理tasklet?
 
 系统中的每个cpu都会维护一个tasklet的链表，定义如下：
 
+```c
 static DEFINE_PER_CPU(struct tasklet_head, tasklet_vec);
-
 static DEFINE_PER_CPU(struct tasklet_head, tasklet_hi_vec);
+```
 
 linux kernel中，和tasklet相关的softirq有两项，HI_SOFTIRQ用于高优先级的tasklet，TASKLET_SOFTIRQ用于普通的tasklet。对于softirq而言，优先级就是出现在softirq pending register(__softirq_pending)中的先后顺序，位于bit 0拥有最高的优先级，也就是说，如果有多个不同类型的softirq同时触发，那么执行的先后顺序依赖在softirq pending register的位置，kernel总是从右向左依次判断是否置位，如果置位则执行。HI_SOFTIRQ占据了bit 0，其优先级甚至高过timer，需要慎用(实际上，我grep了内核代码，似乎没有发现对HI_SOFTIRQ的使用)。当然HI_SOFTIRQ和TASKLET_SOFTIRQ的机理是一样的，因此本文只讨论TASKLET_SOFTIRQ，大家可以举一反三。
 
-3、如何定义一个tasklet?
+#### 3、如何定义一个tasklet?
 
 你可以用下面的宏定义来静态定义tasklet：
 
+```c
 #define DECLARE_TASKLET(name, func, data) \
-
 struct tasklet_struct name = { NULL, 0, ATOMIC_INIT(0), func, data }
-
 #define DECLARE_TASKLET_DISABLED(name, func, data) \
-
 struct tasklet_struct name = { NULL, 0, ATOMIC_INIT(1), func, data }
+```
 
 这两个宏都可以静态定义一个struct tasklet_struct的变量，只不过初始化后的tasklet一个是处于eable状态，一个处于disable状态的。当然，也可以动态分配tasklet，然后调用tasklet_init来初始化该tasklet。
 
-4、如何调度一个tasklet
+#### 4、如何调度一个tasklet
 
 为了调度一个tasklet执行，我们可以使用tasklet_schedule这个接口：
 
+```c
 static inline void tasklet_schedule(struct tasklet_struct *t)
-
 {
-
-if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
-
-__tasklet_schedule(t);
-
+    if (!test_and_set_bit(TASKLET_STATE_SCHED, &t->state))
+    __tasklet_schedule(t);
 }
+```
 
 程序在多个上下文中可以多次调度同一个tasklet执行(也可能来自多个cpu core)，不过实际上该tasklet只会一次挂入首次调度到的那个cpu的tasklet链表，也就是说，即便是多次调用tasklet_schedule，实际上tasklet只会挂入一个指定CPU的tasklet队列中(而且只会挂入一次)，也就是说只会调度一次执行。这是通过TASKLET_STATE_SCHED这个flag来完成的，我们可以用下面的图片来描述：
 
@@ -4210,125 +4101,91 @@ __tasklet_schedule(t);
 
 下面我们再仔细研究一下底层的__tasklet_schedule函数：
 
+```c
 void __tasklet_schedule(struct tasklet_struct *t)
-
 {
-
-unsigned long flags;
-
-local_irq_save(flags);－－－－－－－－－－－－－－－－－－－(1)
-
-t->next = NULL;－－－－－－－－－－－－－－－－－－－－－(2)
-
-*__this_cpu_read(tasklet_vec.tail) = t;
-
-__this_cpu_write(tasklet_vec.tail, &(t->next));
-
-raise_softirq_irqoff(TASKLET_SOFTIRQ);－－－－－－－－－－(3)
-
-local_irq_restore(flags);
-
+    unsigned long flags;
+    local_irq_save(flags);－－－－－－－－－－－－－－－－－－－(1)
+    t->next = NULL;－－－－－－－－－－－－－－－－－－－－－(2)
+    *__this_cpu_read(tasklet_vec.tail) = t;
+    __this_cpu_write(tasklet_vec.tail, &(t->next));
+    raise_softirq_irqoff(TASKLET_SOFTIRQ);－－－－－－－－－－(3)
+    local_irq_restore(flags);
 }
+```
 
-(1)下面的链表操作是per-cpu的，因此这里禁止本地中断就可以拦截所有的并发。
+(1) 下面的链表操作是per-cpu的，因此这里禁止本地中断就可以拦截所有的并发。
 
-(2)这里的三行代码就是将一个tasklet挂入链表的尾部
+(2) 这里的三行代码就是将一个tasklet挂入链表的尾部
 
-(3)raise TASKLET_SOFTIRQ类型的softirq。
+(3) raise TASKLET_SOFTIRQ类型的softirq。
 
-5、在什么时机会执行tasklet?
+#### 5、在什么时机会执行tasklet?
 
 上面描述了tasklet的调度，当然调度tasklet不等于执行tasklet，系统会在适合的时间点执行tasklet callback function。由于tasklet是基于softirq的，因此，我们首先总结一下softirq的执行场景：
 
-(1)在中断返回用户空间(进程上下文)的时候，如果有pending的softirq，那么将执行该softirq的处理函数。这里限定了中断返回用户空间也就是意味着限制了下面两个场景的softirq被触发执行：
+(1) 在中断返回用户空间(进程上下文)的时候，如果有pending的softirq，那么将执行该softirq的处理函数。这里限定了中断返回用户空间也就是意味着限制了下面两个场景的softirq被触发执行：
 
-(a)中断返回hard interrupt context，也就是中断嵌套的场景
+​	(a) 中断返回hard interrupt context，也就是中断嵌套的场景
 
-(b)中断返回software interrupt context，也就是中断抢占软中断上下文的场景
+​	(b) 中断返回software interrupt context，也就是中断抢占软中断上下文的场景
 
-(2)上面的描述缺少了一种场景：中断返回内核态的进程上下文的场景，这里我们需要详细说明。进程上下文中调用local_bh_enable的时候，如果有pending的softirq，那么将执行该softirq的处理函数。由于内核同步的要求，进程上下文中有可能会调用local_bh_enable/disable来保护临界区。在临界区代码执行过程中，中断随时会到来，抢占该进程(内核态)的执行(注意：这里只是disable了bottom half，没有禁止中断)。在这种情况下，中断返回的时候是否会执行softirq handler呢?当然不会，我们disable了bottom half的执行，也就是意味着不能执行softirq handler，但是本质上bottom half应该比进程上下文有更高的优先级，一旦条件允许，要立刻抢占进程上下文的执行，因此，当立刻离开临界区，调用local_bh_enable的时候，会检查softirq pending，如果bottom half处于enable的状态，pending的softirq handler会被执行。
+(2) 上面的描述缺少了一种场景：中断返回内核态的进程上下文的场景，这里我们需要详细说明。进程上下文中调用local_bh_enable的时候，如果有pending的softirq，那么将执行该softirq的处理函数。由于内核同步的要求，进程上下文中有可能会调用local_bh_enable/disable来保护临界区。在临界区代码执行过程中，中断随时会到来，抢占该进程(内核态)的执行(注意：这里只是disable了bottom half，没有禁止中断)。在这种情况下，中断返回的时候是否会执行softirq handler呢?当然不会，我们disable了bottom half的执行，也就是意味着不能执行softirq handler，但是本质上bottom half应该比进程上下文有更高的优先级，一旦条件允许，要立刻抢占进程上下文的执行，因此，当立刻离开临界区，调用local_bh_enable的时候，会检查softirq pending，如果bottom half处于enable的状态，pending的softirq handler会被执行。
 
-(3)系统太繁忙了，不过的产生中断，raise softirq，由于bottom half的优先级高，从而导致进程无法调度执行。这种情况下，softirq会推迟到softirqd这个内核线程中去执行。
+(3) 系统太繁忙了，不过的产生中断，raise softirq，由于bottom half的优先级高，从而导致进程无法调度执行。这种情况下，softirq会推迟到softirqd这个内核线程中去执行。
 
 对于TASKLET_SOFTIRQ类型的softirq，其handler是tasklet_action，我们来看看各个tasklet是如何执行的：
 
+```c
 static void tasklet_action(struct softirq_action *a)
-
 {
-
-struct tasklet_struct *list;
-
-local_irq_disable();－－－－－－－－－－－－－－－－－－－－－－－－－－(1)
-
-list = __this_cpu_read(tasklet_vec.head);
-
-__this_cpu_write(tasklet_vec.head, NULL);
-
-__this_cpu_write(tasklet_vec.tail, this_cpu_ptr(&tasklet_vec.head));
-
-local_irq_enable();
-
-while (list) {－－－－－－－－－遍历tasklet链表
-
-struct tasklet_struct *t = list;
-
-list = list->next;
-
-if (tasklet_trylock(t)) {－－－－－－－－－－－－－－－－－－－－－－－(2)
-
-if (!atomic_read(&t->count)) {－－－－－－－－－－－－－－－－－－(3)
-
-if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
-
-BUG();
-
-t->func(t->data);
-
-tasklet_unlock(t);
-
-continue;－－－－－处理下一个tasklet
-
+    struct tasklet_struct *list;
+    local_irq_disable();－－－－－－－－－－－－－－－－－－－－－－－－－－(1)
+    list = __this_cpu_read(tasklet_vec.head);
+    __this_cpu_write(tasklet_vec.head, NULL);
+    __this_cpu_write(tasklet_vec.tail, this_cpu_ptr(&tasklet_vec.head));
+    local_irq_enable();
+    while (list) {－－－－－－－－－遍历tasklet链表
+        struct tasklet_struct *t = list;
+        list = list->next;
+        if (tasklet_trylock(t)) {－－－－－－－－－－－－－－－－－－－－－－－(2)
+            if (!atomic_read(&t->count)) {－－－－－－－－－－－－－－－－－－(3)
+                if (!test_and_clear_bit(TASKLET_STATE_SCHED, &t->state))
+                    BUG();
+                t->func(t->data);
+                tasklet_unlock(t);
+                continue;－－－－－处理下一个tasklet
+            }
+            tasklet_unlock(t);－－－－清除TASKLET_STATE_RUN标记
+        }
+        local_irq_disable();－－－－－－－－－－－－－－－－－－－－－－－(4)
+        t->next = NULL;
+        *__this_cpu_read(tasklet_vec.tail) = t;
+        __this_cpu_write(tasklet_vec.tail, &(t->next));
+        __raise_softirq_irqoff(TASKLET_SOFTIRQ); －－－－－－再次触发softirq，等待下一个执行时机
+        local_irq_enable();
+    }
 }
+```
 
-tasklet_unlock(t);－－－－清除TASKLET_STATE_RUN标记
+(1) 从本cpu的tasklet链表中取出全部的tasklet，保存在list这个临时变量中，同时重新初始化本cpu的tasklet链表，使该链表为空。由于bottom half是开中断执行的，因此在操作tasklet链表的时候需要使用关中断保护
 
-}
+(2) tasklet_trylock主要是用来设定该tasklet的state为TASKLET_STATE_RUN，同时判断该tasklet是否已经处于执行状态，这个状态很重要，它决定了后续的代码逻辑。
 
-local_irq_disable();－－－－－－－－－－－－－－－－－－－－－－－(4)
-
-t->next = NULL;
-
-*__this_cpu_read(tasklet_vec.tail) = t;
-
-__this_cpu_write(tasklet_vec.tail, &(t->next));
-
-__raise_softirq_irqoff(TASKLET_SOFTIRQ); －－－－－－再次触发softirq，等待下一个执行时机
-
-local_irq_enable();
-
-}
-
-}
-
-(1)从本cpu的tasklet链表中取出全部的tasklet，保存在list这个临时变量中，同时重新初始化本cpu的tasklet链表，使该链表为空。由于bottom half是开中断执行的，因此在操作tasklet链表的时候需要使用关中断保护
-
-(2)tasklet_trylock主要是用来设定该tasklet的state为TASKLET_STATE_RUN，同时判断该tasklet是否已经处于执行状态，这个状态很重要，它决定了后续的代码逻辑。
-
+```c
 static inline int tasklet_trylock(struct tasklet_struct *t)
-
 {
-
-return !test_and_set_bit(TASKLET_STATE_RUN, &(t)->state);
-
+	return !test_and_set_bit(TASKLET_STATE_RUN, &(t)->state);
 }
+```
 
 你也许会奇怪：为何这里从tasklet的链表中摘下一个本cpu要处理的tasklet list，而这个list中的tasklet已经处于running状态了，会有这种情况吗?会的，我们再次回到上面的那个软硬件结构图。同样的，HW block A的驱动使用的tasklet机制并且在中断handler(top half)中将静态定义的tasklet 调度执行。HW block A的硬件中断首先送达cpu0处理，因此该driver的tasklet被挂入CPU0对应的tasklet链表并在适当的时间点上开始执行该tasklet。这时候，cpu0的硬件中断又来了，该driver的tasklet callback function被抢占，虽然tasklet仍然处于running状态。与此同时，HW block A硬件又一次触发中断并在cpu1上执行，这时候，该driver的tasklet处于running状态，并且TASKLET_STATE_SCHED已经被清除，因此，调用tasklet_schedule函数将会使得该driver的tasklet挂入cpu1的tasklet链表中。由于cpu0在处理其他硬件中断，因此，cpu1的tasklet后发先至，进入tasklet_action函数调用，这时候，当从cpu1的tasklet摘取所有需要处理的tasklet链表中，HW block A对应的tasklet实际上已经是在cpu0上处于执行状态了。
 
 我们在设计tasklet的时候就规定，同一种类型的tasklet只能在一个cpu上执行，因此tasklet_trylock就是起这个作用的。
 
-(3)检查该tasklet是否处于enable状态，如果是，说明该tasklet可以真正进入执行状态了。主要的动作就是清除TASKLET_STATE_SCHED状态，执行tasklet callback function。
+(3) 检查该tasklet是否处于enable状态，如果是，说明该tasklet可以真正进入执行状态了。主要的动作就是清除TASKLET_STATE_SCHED状态，执行tasklet callback function。
 
-(4)如果该tasklet已经在别的cpu上执行了，那么我们将其挂入该cpu的tasklet链表的尾部，这样，在下一个tasklet执行时机到来的时候，kernel会再次尝试执行该tasklet，在这个时间点，也许其他cpu上的该tasklet已经执行完毕了。通过这样代码逻辑，保证了特定的tasklet只会在一个cpu上执行，不会在多个cpu上并发。
+(4) 如果该tasklet已经在别的cpu上执行了，那么我们将其挂入该cpu的tasklet链表的尾部，这样，在下一个tasklet执行时机到来的时候，kernel会再次尝试执行该tasklet，在这个时间点，也许其他cpu上的该tasklet已经执行完毕了。通过这样代码逻辑，保证了特定的tasklet只会在一个cpu上执行，不会在多个cpu上并发。
 
 
 
